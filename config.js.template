@@ -1,0 +1,13 @@
+module.exports = {
+  host                : 'localhost',
+  user                : 'xxxx',
+  password            : 'xxxx',
+  database            : 'node_chat',
+  gcm_api_key         : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  url_root            : 'https://my_chat_url.example.org/',
+  privateKey          : '/etc/ssl/my.key',
+  certificate         : '/etc/ssl/my.crt',
+  caCert1             : '/etc/ssl/sub.class1.server.ca.pem',
+  caCert2             : '/etc/ssl/ca.pem'
+  secret_hash_token   : 'xxxxxxxxxxxxxxxxxxxxx';
+};

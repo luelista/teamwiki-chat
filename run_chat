@@ -1,0 +1,5 @@
+#!/bin/bash
+cd /home/max.weller/chat
+forever stop app.js
+forever start -a -l forever.log -o chat.log -e chat.err.log app.js
+

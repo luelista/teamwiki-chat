@@ -1,0 +1,79 @@
+<html>
+<head>
+<title>CHAT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+<script src="//ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/client.js"></script>
+<link rel="icon" href="https://teamwiki.de/static/img/icons/oxygen/16x16/apps/scribus.png">
+<link rel="icon" href="https://teamwiki.de/static/img/icons/oxygen/32x32/apps/scribus.png" sizes="32x32">
+<link rel="icon" href="https://teamwiki.de/static/img/icons/oxygen/48x48/apps/scribus.png" sizes="48x48">
+<script>
+    var socket = connectSocket();
+    var runtimeId =null;
+    
+    $(function() {
+        if (window.localStorage.accessToken) {
+            socket.userName=(window.localStorage.accessToken).split("&");
+        }
+        if (window.webkitNotifications) window.webkitNotifications.requestPermission();
+    });
+    socket.on('reconnecting', function(reconnectionDelay,reconnectionAttempts) {
+        showPopup("Connection problem", "Der "+reconnectionAttempts+". Versuch findet in "+(reconnectionDelay/1000)+" sek statt", reconnectionDelay, null, "conn_info");
+    });
+    socket.on('reconnect_failed', function() {
+        showPopup("Connection problem", "All connection attempts to chat server failed, giving up.", 0, null, "conn_info");
+    });
+    socket.on('disconnect', function() {
+        showPopup("Connection problem", "Disconnected", 0, null, "conn_info");
+    });
+    socket.on('error', function() {
+        showPopup("Connection problem", "An error occured", 0, null, "conn_info");
+    });
+    socket.onAuthRequest = function() {
+        showPopup("Connecting...", "Authenticating...", 0, null, "conn_info");
+    };
+    function onSoftwareUpdate() {
+        showPopup("Connecting...", "Updating chat background page...", 0, null, "conn_info");
+        location.reload();
+    }
+    socket.on('software update', function(data) {
+        if (data.version > 2) onSoftwareUpdate();
+    });
+    socket.on('online status', function (data) {
+        if (data.type == "welcome") {
+            if (runtimeId !== null && runtimeId != data.runtimeId) {
+                onSoftwareUpdate(); return;
+            }
+            runtimeId = data.runtimeId;
+            showPopup("Connecting...", "Connection successful - Willkommen im Chat", 2000, null, "conn_info");
+        } else {
+            showPopup("Online Status", "* "+data.by+" "+data.type+" *", 2000, null, "online");
+        }
+    });
+    socket.onAuthResponse = function(success) {
+        if (!success) {
+            showPopup("Connection problem", "Your access token has expired. Click to login.", 0, function() {
+                open("https://teamwiki.de/chat");
+            }, "conn_info");
+        }
+    }
+    
+    socket.handleIncomingMessage = function(data, msgType) {
+        if (msgType === undefined) msgType = "all";
+        onNotify(msgType, data);
+    }
+    function onNotify(typ, msg) {
+        if (msg.by == socket.userName[0]) return;
+        onNotifyGlob(typ, msg);
+    }
+</script>
+</head>
+<body>
+    <audio id="notifySound">
+        <source src="https://teamwiki.de/static/audio/doorbell2.mp3" type="audio/mpeg">
+        <source src="https://teamwiki.de/static/audio/doorbell2.ogg" type="audio/ogg; codecs=vorbis">
+        <source src="https://teamwiki.de/static/audio/doorbell2.wav" type="audio/wav">
+    </audio>
+</body>
+</html>
