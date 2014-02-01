@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/max.weller/chat
-forever stop app.js
-forever start -a -l forever.log -o chat.log -e chat.err.log app.js
+DIR=/home/maxweller/dev/chat
+forever stop $DIR/app.js
+forever start -a -l /tmp/max/chat-forever.log -o /tmp/max/chat-chat.log -e /tmp/max/chat-chat.err.log $DIR/app.js
 
