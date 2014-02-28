@@ -30,7 +30,8 @@ function connectSocket() {
         }
     }
     
-    socket.on('public chatmsg', function(data) { socket.handleIncomingMessage(data); });
+    socket.on('msg', function(data) { socket.handleIncomingMessage(data); });
+    socket.on('presence', function(data) { socket.handlePresence(data); });
     socket.on('sysmsg', function(data) { socket.handleIncomingMessage(data); });
     socket.on('echomsg', function(data) { socket.handleIncomingMessage(data); });
     socket.on('mention', function(data) { socket.handleIncomingMessage(data, "mention"); });
@@ -72,7 +73,9 @@ function onNotifyGlob(typ, msg) {
     if (isOptionEnabled('notify_'+typ+'_popup')) {
         if (isNotificationsAllowed()) {
             if (window.chrome.extension && location.pathname != "/background") return; //window.chrome.extension.getBackgroundPage() != null && window.chrome.extension.getBackgroundPage() != window) return;
-            showPopup(msg.by + " messaged you", msg.msg, 0, null, "msgfrom_"+msg.by);
+            if (msg.by) {
+                showPopup(msg.by + " messaged you", msg.msg, 0, null, "msgfrom_"+msg.by);
+            }
         }
     }
     

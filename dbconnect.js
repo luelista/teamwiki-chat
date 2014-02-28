@@ -36,7 +36,7 @@ function handleDisconnect(connection) {
 handleDisconnect(ex.connection);
 
 var databaseUrl = "chatdb"; // "username:password@example.com/mydb"
-var collections = ["messages", "globalProperties", "gcmRegistrations"]
+var collections = ["messages", "globalProperties", "userinfo", "gcmRegistrations"]
 ex.mongo = require("mongojs").connect(databaseUrl, collections);
 
 module.exports = ex;

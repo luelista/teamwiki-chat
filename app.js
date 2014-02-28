@@ -11,26 +11,26 @@ var gcm = new GCM(config.gcm_api_key);
 var privateKey = fs.readFileSync(config.privateKey).toString();
 var certificate = fs.readFileSync(config.certificate).toString();
 var caCert = [ ];//fs.readFileSync(config.caCert1).toString(),
-                //fs.readFileSync(config.caCert2).toString() ];
-/*
+//fs.readFileSync(config.caCert2).toString() ];
+
 var connection = new xmpp.Client({
-    jid: 'anonymous@teamwiki.de',
-    host: config.xmppHost,
-    port: config.xmppPort
+  jid: 'anonymous@teamwiki.de',
+  host: 'teamwiki.de',
+  port: config.xmppPort
 });
 connection.on('error', function(err) {
-    console.log("Jabber Error: ", err);
+  console.log("Jabber Connection Error: ", err);
 });
-*/
+
 
 if (config.xmppComponentJid) {
-    var component = new xmpp.Component({
-        jid: config.xmppComponentJid,
-        password: config.xmppComponentSecret,
-        host: config.xmppHost,
-        port: Number(config.xmppPort),
-        reconnect: true
-    });
+  var component = new xmpp.Component({
+    jid: config.xmppComponentJid,
+    password: config.xmppComponentSecret,
+    host: config.xmppHost,
+    port: Number(config.xmppPort),
+    reconnect: true
+  });
 }
 
 
@@ -38,9 +38,9 @@ var URL_ROOT = config.url_root;
 
 var express = require('express')
 var app = express()
-  , http = require('http')
-  , https = require('https')
-  , server = https.createServer({ key: privateKey, cert: certificate, ca: caCert }, app);
+, http = require('http')
+, https = require('https')
+, server = https.createServer({ key: privateKey, cert: certificate, ca: caCert }, app);
 
 
 var io = require('socket.io').listen(server);
@@ -53,7 +53,7 @@ io.set('log level', 2);
 server.listen(8443);
 
 app.use(express.bodyParser());
-
+app.use('/assets', express.static(__dirname + '/assets'));
 app.get('/', function (req, res) {
   res.sendfile(__dirname + '/index.html');
 });
@@ -76,31 +76,34 @@ app.get('/jabber', function (req, res) {
   res.sendfile(__dirname + '/jabberform.html');
 });
 app.post('/jabber', function (req, res) {
-    
-    //user to be registered name & pass
-    var newUserName = req.body.username;
-    var newUserPass = req.body.password;
+  
+  //user to be registered name & pass
+  var newUserName = req.body.username;
+  var newUserPass = req.body.password;
 
-    //Stream
-    var iq = "<iq type='set' id='reg2'><query xmlns='jabber:iq:register'><username>" + newUserName + "</username><password>" + newUserPass + "</password></query></iq>";
+  //Stream
+  var iq = "<iq type='set' id='reg2'><query xmlns='jabber:iq:register'><username>" + newUserName + "</username><password>" + newUserPass + "</password></query></iq>";
 
-    //Send
-    connection.send(iq);
+  //Send
+  connection.send(iq);
 
-    res.send(200, "You might have a new account now!");
-    
+  res.send(200, "You might have a new account now!");
+  
+});
+connection.on('stanza', function(stanza) {
+  console.log("connection stanza: ",stanza);
 });
 app.get(/^\/uploads\/([a-z0-9]+).*$/, function (req, res) {
   var base = __dirname + '/uploads/' + req.params[0] + '/';
   fs.readdir(base, function(err, files) {
-      //console.log(err,files);
-      for (var i = 0; i < files.length; i++) {
-          if (files[i] != "." && files[i] != "..") {
-              res.sendfile(base + files[i]);
-              return;
-          }
+    //console.log(err,files);
+    for (var i = 0; i < files.length; i++) {
+      if (files[i] != "." && files[i] != "..") {
+        res.sendfile(base + files[i]);
+        return;
       }
-      res.status(404).sendfile('./404_attachment.html');
+    }
+    res.status(404).sendfile('./404_attachment.html');
   });
 });
 app.post('/upload_media', function (req, res) {
@@ -108,10 +111,10 @@ app.post('/upload_media', function (req, res) {
   if (req.files && req.files['media'] && req.files['media'].size > 0) {
     var target = "uploads/" + getUploadId() + "/";
     fs.mkdir(target, function() {
-        target += req.files['media'].name.replace(/[^a-zA-Z0-9._:-]/g, "_");
-        fs.rename(req.files['media'].path, target);
-        res.send({success : true, fileSpec: target});
-        lastUpload = target;
+      target += req.files['media'].name.replace(/[^a-zA-Z0-9._:-]/g, "_");
+      fs.rename(req.files['media'].path, target);
+      res.send({success : true, fileSpec: target});
+      lastUpload = target;
     });
   } else {
     res.send({success : false});
@@ -128,43 +131,38 @@ var clientIdCounter = 1;
 var connectedUsers = {};
 var connectedClients = {};
 
+var rooms = {};
+
 io.sockets.on('connection', function (socket) {
-  var username = null, friends = [], clientId = null, filter = "";
+  var username = null, friends = [], clientId = null, room = "";
+  socket.type = 'web';
   socket.on('oauth', function (data, ack) {
     console.log('try to connect as '+data.username,db.connection);
     db.connection.query(db.SQL_GET_USER_INFO, [data.username], function(err, results) {
-        console.log('-> query res: ', err, results);
-        if (err) {
-          socket.emit('eval', 'console.log("Database error occured - please try again later\n'+err+'");');
-          return;
-        }
-        clientId = clientIdCounter++; connectedClients[clientId] = { user: username, socket: socket, ua: data.userAgent };
-        if (results.length != 1) {
-            ack({success:false, error:"userNotFound"});
-            return;
-        }
-        var hash = crypto.createHash('sha1').update(results[0].id+"-"+results[0].username+"-"+results[0].password+'-'+config.secret_hash_token).digest('hex');
-        if (hash != data.token) {
-            ack({success:false, error:"userNotFound"});
-            return;
-        }
-        username = results[0].username;
-        connectedClients[clientId].user = username;
-        connectedUsers[username] = (connectedUsers[username] != null) ? (connectedUsers[username] + 1) : 1;
-        io.sockets.in('is_' + username).emit('online status', {type: '- you joined on another device', runtimeId: runtimeId, by: username, onlines: connectedUsers, ts: +new Date()});
-        socket.join('is_' + username);
-        db.connection.query(db.SQL_GET_ALL_USERLINKS, [data.username, data.username], function(err, results) {
-          for(var i = 0; i < results.length; i++) {
-            friends.push(results[i].username); socket.join('friends_of_' + results[i].username);
-          }
-          console.log('...subscribing to friends: ' + results.length);
-          //if (results.length > 0) {
-              ack({success:true});
-          //}
-        });
-        broadcastOnlineStatus('joined');
-        onSetFilter("");
-        socket.emit('software update', {version: 2});
+      console.log('-> query res: ', err, results);
+      if (err) {
+        socket.emit('eval', 'console.log("Database error occured - please try again later\n'+err+'");');
+        return;
+      }
+      clientId = clientIdCounter++; connectedClients[clientId] = { user: username, socket: socket, ua: data.userAgent };
+      if (results.length != 1) {
+        ack({success:false, error:"userNotFound"});
+        return;
+      }
+      var hash = crypto.createHash('sha1').update(results[0].id+"-"+results[0].username+"-"+results[0].password+'-'+config.secret_hash_token).digest('hex');
+      if (hash != data.token) {
+        ack({success:false, error:"userNotFound"});
+        return;
+      }
+      username = results[0].username;
+      connectedClients[clientId].user = username;
+      connectedUsers[username] = (connectedUsers[username] != null) ? (connectedUsers[username] + 1) : 1;
+      io.sockets.in('is_' + username).emit('online status', {type: '- you joined on another device', runtimeId: runtimeId, by: username, onlines: connectedUsers, ts: +new Date()});
+      socket.join('is_' + username);
+      
+      //broadcastOnlineStatus('joined');
+      socketJoinRoom("chat");
+      socket.emit('software update', {version: 2});
     });
     
   });
@@ -175,55 +173,36 @@ io.sockets.on('connection', function (socket) {
       connectedUsers[username] = (connectedUsers[username] != null) ? (connectedUsers[username] - 1) : 0;
       //socket.broadcast.to('friends_of_' + username).emit('sysmsg', {type: 'joined', by: username});
       //postMsg(joinMsg);
-      broadcastOnlineStatus('left');
+      //broadcastOnlineStatus('left');
       io.sockets.in('is_' + username).emit('online status', {type: '- you left on another device', runtimeId: runtimeId, by: username, onlines: connectedUsers, ts: +new Date()});
     }
     connectedClients[clientId] = null;
+    leaveRoom(room, 's_' + clientId);
   });
   
   socket.emit('auth required');
   
-  function onSetFilter(dfilter) {
-      filter = parseMsg(dfilter);
-      console.log("setFilter",filter);
-      socket.emit('online status', {type: 'welcome', filter: filter, runtimeId: runtimeId, by: username, onlines: connectedUsers, ts: +new Date()});
-  }
   
-  socket.on('set filter', function(data) {
-      if (typeof data == "string") onSetFilter(data);
+  function socketJoinRoom(nroom) {
+    room = nroom;
+    broadcastRoom(room, 'presence', { nick: username, transport: 'web', affil: 'member', role: 'participant' });
+    joinRoom(room, 's_' + clientId, { nick: username });
+    socket.join('room_' + room);
+    socket.emit('online status', { type: 'welcome', room: room, runtimeId: runtimeId, ts: +new Date() });
+  }
+  socket.on('join room', function(data) {
+    if (typeof data == "string") socketJoinRoom(data);
   });
   
   socket.on('request history', function(data, callback) {
-      var query;
-      if (filter.type == "dm") {
-        query = { ts: { $lt: data.beforeTs }, type: 'dm', $or : [
-            { by: username, mentions: { $in: filter.mentions } },
-            { by: { $in: filter.mentions }, mentions: username }
-        ]};
+    getRoomHistory(data.room, data.beforeTs, 10, function(err, results) {
+      if (err) {
+        console.log("error loading history", err);
+        callback({historyData : [], error:true});
       } else {
-        var myFriends = friends.filter(function(e) { if (filter.mentionsExc.indexOf(e) == -1) return true; });
-        if (filter.mentions.length > 0) myFriends = myFriends.filter(function(e) { if (filter.mentions.indexOf(e) > -1) return true; });
-        
-        query = { ts: { $lt: data.beforeTs }, $or : [
-            { by: username },
-            { by: { $in: myFriends }, type: { $in: ['pub', 'announcement'] } },
-            { mentions: username  }
-        ]};
-        
-        if (filter.tagsExc.length > 0)
-          query.tags = { $nin: filter.tagsExc };
-        if (filter.tags.length > 0)
-          query.tags = { $in: filter.tags };
-        
+        callback({historyData : results});
       }
-      var cursor = db.mongo.messages.find(query).sort({_id: -1}).limit(10).toArray(function(err, results) {
-          if (err) {
-              console.log("error loading history", err);
-              callback({historyData : [], error:true});
-          } else {
-              callback({historyData : results});
-          }
-      })
+    })
   });
   
   socket.on('register gcm', function (data) {
@@ -232,83 +211,112 @@ io.sockets.on('connection', function (socket) {
       update: { user: username, id: data.GCMRegistrationId },
       upsert: true
     }, function(err, doc){
-        console.log("gcm registration: ", err, doc);
+      console.log("gcm registration: ", err, doc);
     });
   });
   
   socket.on('command', function (data) {
-      var cmd = data.cmd.split(" ");
-      switch(cmd[0]) {
-          case "/lcl":
-              for(var i in connectedClients)
-                if (connectedClients.hasOwnProperty(i) && connectedClients[i] != null)
-                    sendSysMsg("Client #"+i+": "+connectedClients[i].user+" / "+connectedClients[i].socket+" / "+connectedClients[i].ua)
-              break;
-          case "/restartServer":
-              io.sockets.emit('online status', {type: "Server is going to restart", by: "", onlines: connectedUsers, ts: +new Date()});
-              throw new Error("Restart requested!");
-              break;
-          case "/wall":
-              io.sockets.emit('online status', {type: data.cmd.substr(5), by: "", onlines: connectedUsers, ts: +new Date()});
-              break;
-          case "/evalOn":
-              var target=cmd[1];
-              cmd = cmd.slice(2).join(" ");
-              var cl = connectedClients[target];
-              if (cl && cl.socket) {
-                cl.socket.emit('eval', {js: cmd}, function(result) {
-                  sendSysMsg("result: "+result);
-                });
-              } else {
-                sendSysMsg("client not found");
-              }
-              break;
-          case "/lupl":
-              sendSysMsg("last upload: <a href='"+URL_ROOT+lastUpload+"'>"+URL_ROOT+lastUpload+"</a>&lt;&lt;&lt;");
-              break;
+    var cmd = data.cmd.split(" ");
+    switch(cmd[0]) {
+    case "/lcl":
+      for(var i in connectedClients)
+        if (connectedClients.hasOwnProperty(i) && connectedClients[i] != null)
+          sendSysMsg("Client #"+i+": "+connectedClients[i].user+" / "+connectedClients[i].socket+" / "+connectedClients[i].ua)
+      break;
+    case "/restartServer":
+      io.sockets.emit('online status', {type: "Server is going to restart", by: "", onlines: connectedUsers, ts: +new Date()});
+      throw new Error("Restart requested!");
+      break;
+    case "/wall":
+      io.sockets.emit('online status', {type: data.cmd.substr(5), by: "", onlines: connectedUsers, ts: +new Date()});
+      break;
+    case "/evalOn":
+      var target=cmd[1];
+      cmd = cmd.slice(2).join(" ");
+      var cl = connectedClients[target];
+      if (cl && cl.socket) {
+        cl.socket.emit('eval', {js: cmd}, function(result) {
+          sendSysMsg("result: "+result);
+        });
+      } else {
+        sendSysMsg("client not found");
       }
+      break;
+    case "/lupl":
+      sendSysMsg("last upload: <a href='"+URL_ROOT+lastUpload+"'>"+URL_ROOT+lastUpload+"</a>&lt;&lt;&lt;");
+      break;
+    }
   });
   
   socket.on('chatmsg', function (data) {
     console.log(data);
     if (!username) { console.log("not authenticated - discarding");socket.emit('auth required'); return; }
     
-    var msg = parseMsg(data.text);
+    var msg = { msg: data.text }; //parseMsg(data.text);
     msg.imgs = data.imgs;
     msg.tmp_id = data.tmp_id;
-    postMsg(msg, data.tmp_id, data.try_update);
+    msg.room = room;
+    //postMsg(msg, data.tmp_id, data.try_update);
+    postMsg(room, username, msg.msg);
   });
-  function broadcastOnlineStatus(stat) {
-      socket.broadcast.to('friends_of_' + username).emit('online status', {type: stat, by: username, onlines: connectedUsers, ts: +new Date()});
-  }
   function sendSysMsg(text) {
-      io.sockets.in('is_' + username).emit('sysmsg', { _id: "sys_"+(+new Date()), type: "announcement", by: "&lt;SYS&gt;", msg: text, imgs: [], mentions: [], recipient: username, tags: [] });
-  }
-  function postMsg(p_msg, tmp_id, try_update) {
-    p_msg.by = username;
-    db.mongo.messages.findAndModify({
-        query: {tmp_id: tmp_id, by: username},
-        update: p_msg,
-        'new': true,
-        upsert: true
-    }, function(err, msg) {
-        console.log(err,msg);
-        if (typeof msg != "object") msg = p_msg;
-        if (msg.type == "pub" || msg.type == "announcement") {
-            socket.broadcast.to('friends_of_' + username).emit('public chatmsg', msg);
-        }
-        if (msg.mentions.length > 0) {
-            for (var i = 0, max = msg.mentions.length; i < max; i++) {
-                socket.broadcast.to('is_' + msg.mentions[i]).emit('mention', msg);
-                sendViaGCM(msg.mentions[i], msg);
-            }
-        }
-        // echo it back
-        if (tmp_id) msg.tmp_id = tmp_id;
-        io.sockets.in('is_' + username).emit('echomsg', msg);
-    });
+    io.sockets.in('is_' + username).emit('sysmsg', { _id: "sys_"+(+new Date()), type: "announcement", by: "&lt;SYS&gt;", msg: text, imgs: [], mentions: [], recipient: username, tags: [] });
   }
 });
+
+function getRoomHistory(roomName, beforeTs, amount, callback) {
+  var query = {};
+  if (beforeTs) query.ts = { $lt: beforeTs };
+  query.room = roomName;
+
+  var cursor = db.mongo.messages.find(query).sort({_id: -1}).limit(amount).toArray(callback)
+}
+
+function postMsg(room, from, text) {
+  var ts = +new Date();
+  broadcastRoom(room, 'msg', { by: from, msg: text, ts: ts });
+  db.mongo.messages.save({
+    by: from, room: room, msg: text, ts: ts
+  }, function(err, msg) {
+    console.log("postMsg",err,msg);
+    
+  });
+}
+
+// New Room Management
+
+function joinRoom(roomName, userId, data) {
+  if (! rooms[roomName]) rooms[roomName] = {};
+  data.id = userId;
+  rooms[roomName][userId] = data;
+}
+function leaveRoom(roomName, userId) {
+  if (! rooms[roomName] || ! rooms[roomName][userId]) return;
+  var nick = rooms[roomName][userId].nick, trans = rooms[roomName][userId].trans;
+  delete rooms[roomName][userId];
+  if (nick)
+    broadcastRoom(roomName, 'presence', { nick: nick, transport: trans, affil: 'member', role: 'none', type: 'unavailable' });
+}
+function broadcastRoom(roomName, msgType, data) {
+  console.log("broadcast",roomName,msgType);
+  if (! rooms[roomName]) return;
+  data.roomName = roomName;
+  io.sockets.in('room_' + roomName).emit(msgType, data);
+  for (var i in rooms[roomName]) {
+    console.log("...",i);
+    if (rooms[roomName][i].msg) {
+      rooms[roomName][i].msg(msgType, data);
+    }
+  }
+}
+function getRoomMembers(roomName) {
+  if (! rooms[roomName]) rooms[roomName] = {};
+  return rooms[roomName];
+}
+
+
+
+
 
 function sendViaGCM(toUser, msg) {
   db.mongo.gcmRegistrations.find({ user: toUser }).toArray(function(err, results) {
@@ -326,109 +334,218 @@ function sendViaGCM(toUser, msg) {
   });
 }
 
-function parseMsg(str) {
-    var msg = { msg: str, ts: +new Date(), mentions: [], tags: [], mentionsExc: [], tagsExc: [] }, pattern, r;
-    
-    // match mentions
-    pattern = new RegExp(/@([a-z0-9_.-]+)\b/g);
-    while (r = pattern.exec(str))
-        if (r[1].charAt(0) == "-") msg.mentionsExc.push(r[1].substr(1)); else msg.mentions.push(r[1]);
-    
-    // match tags
-    pattern = new RegExp(/#([a-z0-9_.-]+|<[^>]+>)\b/g);
-    while (r = pattern.exec(str))
-        if (r[1].charAt(0) == "-") msg.tagsExc.push(r[1].substr(1)); else msg.tags.push(r[1]);
-    
-    // match direct message
-    if(r = str.match(/^@@([a-z0-9_.-]+)/)) {
-        msg.type = "dm"; msg.recipient = r[1];// msg.mentions.push(r[1]);
-    } else {
-        msg.type = "pub";
-    }
-    return msg;
-}
-
 function getUploadId() {
-    var token = "" + runtimeId + new Date() + (++uploadIdCounter);
-    return crypto.createHash("md5").update(token).digest("hex").substr(0,16);
+  var token = "" + runtimeId + new Date() + (++uploadIdCounter);
+  return crypto.createHash("md5").update(token).digest("hex").substr(0,16);
 }
 
 
 
 //hilfs-server
 /*
-http.createServer(function(request,response) {
-    response.writeHead(302, "Moved Temp", {Location: "https://teamwiki.de/chat"});
-    response.end();
-}).listen(8880);
+  http.createServer(function(request,response) {
+  response.writeHead(302, "Moved Temp", {Location: "https://teamwiki.de/chat"});
+  response.end();
+  }).listen(8880);
 */
 
+
+var XMLNS_MUC = "http://jabber.org/protocol/muc";
+var JABBER_ID_REGEX = /([a-zA-Z0-9_.-]+)@([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)/;
+var JABBER_ID_REGEX2 = /([a-zA-Z0-9_.-]+)@([a-zA-Z0-9_.-]+)/;
+var myJid = config.xmppComponentJid;
 
 // jabber component
 
 if (component) {
-    component.on('online', function() {
-        console.log('Component is online')
-        component.on('stanza', onXmppStanza)
-        // nodejs has nothing left to do and will exit
-        //component.end()
-    });
-    
-    component.on('error', function(e) {
-        console.error("XMPP error: ", e);
-    });
+  component.on('online', function() {
+    console.log('Component is online')
+    component.on('stanza', onXmppStanza)
+    // nodejs has nothing left to do and will exit
+    //component.end()
+  });
+  
+  component.on('error', function(e) {
+    console.error("XMPP error: ", e);
+  });
 }
 
 function onXmppStanza(stanza) {
-    console.log('Received stanza: ', stanza.toString());
-    if (stanza.is('iq')) {
-        var recp = stanza.attrs.to.split(/@/);
-        if (recp.length == 1 && recp[0] == myJid) {
-            if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
-                var disco = discoReply(stanza, query), d = disco.getChild('query');
-                d.c('identity', { category: 'conference', type: 'text', name: 'TeamWiki Chat System' });
-                d.c('feature', { 'var': 'http://jabber.org/protocol/muc' });
-                component.send(disco);
-                console.log("sent info stanza : ", disco);
-            }
-            if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
-                var disco = discoReply(stanza, query), d = disco.getChild('query');
-                d.c('item', { jid: 'chat@'+myJid, name: 'The Chat' });
-                //d.c('item', { 'var': 'http://jabber.org/protocol/muc' });
-                component.send(disco);
-                console.log("sent items stanza : ", disco);
-            }
-        }
-        if (recp.length == 2 && recp[1] == myJid && recp[0] == "chat") {
-            if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
-                var disco = discoReply(stanza, query), d = disco.getChild('query');
-                d.c('identity', { category: 'conference', type: 'text', name: 'The Chat' });
-                d.c('feature', { 'var': 'muc_open' });
-                d.c('feature', { 'var': 'muc_permanent' });
-                d.c('feature', { 'var': 'muc_public' });
-                component.send(disco);
-                console.log("sent info stanza : ", disco);
-            }
-            if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
-                var disco = discoReply(stanza, query), d = disco.getChild('query');
-                component.send(disco);
-                console.log("sent items stanza : ", disco);
-            }
-        }
+  console.log('Received stanza: ', stanza.toString());
+  if (stanza.is('iq') && stanza.attrs.type == 'get') {
+    var recp = stanza.attrs.to.split(/@/);
+    if (recp.length == 1 && recp[0] == myJid) {
+      if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
+        var disco = discoReply(stanza, query), d = disco.getChild('query');
+        d.c('identity', { category: 'conference', type: 'text', name: 'TeamWiki Chat System' });
+        d.c('feature', { 'var': 'http://jabber.org/protocol/muc' });
+        xmppSend("sent info stanza : ", disco);
+      }
+      if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
+        var disco = discoReply(stanza, query), d = disco.getChild('query');
+        for (var i in rooms)
+          d.c('item', { jid: i + '@' + myJid, name: i });
+        xmppSend("sent items stanza : ", disco);
+      }
     }
-    /*if (stanza.is('message')) {
-      var i = parseInt(stanza.getChildText('body'))
-      var reply = new ltx.Element('message', { to: stanza.attrs.from, from: stanza.attrs.to, type: 'chat' })
-      reply.c('body').t(isNaN(i) ? 'i can count!' : ('' + (i + 1)))
-      component.send(reply)
-      }*/
+    if (recp.length == 2 && recp[1] == myJid) {
+      var room = rooms[recp[0]];
+      if (room) {
+        if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
+          var disco = discoReply(stanza, query), d = disco.getChild('query');
+          d.c('identity', { category: 'conference', type: 'text', name: 'The Chat' });
+          d.c('feature', { 'var': 'muc_open' });
+          d.c('feature', { 'var': 'muc_permanent' });
+          d.c('feature', { 'var': 'muc_public' });
+          xmppSend("sent info stanza : ", disco);
+        }
+        if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
+          var disco = discoReply(stanza, query), d = disco.getChild('query');
+          for(var i in room)
+            d.c('item', { jid: stanza.attrs.to + '/' + room[i].nick });
+          xmppSend("sent items stanza : ", disco);
+        }
+      } else {
+        var disco = discoReply(stanza, query), d = disco.getChild('query');
+        xmppSend("sent empty result stanza : ", disco);
+      }
+    }
+    if (recp = stanza.attrs.to.match(JABBER_ID_REGEX)) {
+      if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
+        var disco = discoReply(stanza, query), d = disco.getChild('query');
+        d.c('identity', { category: 'client', type: 'pc' });
+        d.c('feature', { 'var': XMLNS_MUC });
+        // TODO XEP-0045 6.7 - contact the client for real data
+        xmppSend("sent info stanza : ", disco);
+      }
+      if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
+        var disco = discoReply(stanza, query), d = disco.getChild('query');
+        xmppSend("sent items stanza : ", disco);
+      }
+      if (query = stanza.getChild('vCard', "vcard-temp")) {
+        var iq = new xmpp.Element('iq', 
+                                  { type: 'error', from: myJid, to: stanza.attrs.from, id: stanza.attrs.id });
+        xmppSend("sent error stanza : ", iq);
+      }
+      
+    }
+  }
+  if (stanza.is('presence')) {
+    var r;
+    if (r = stanza.attrs.to.match(JABBER_ID_REGEX)) {
+      if (stanza.attrs.type == "unavailable") {
+        leaveRoom(r[1], stanza.attrs.from);
+        xmppSendPresence(stanza.attrs.to, stanza.attrs.from, 'member', 'none', 'unavailable', [ '110' ]);
+        
+        return;
+      }
+      console.log("JOIN: ",r[1],r[3]);
+      var mems = getRoomMembers(r[1]);
+      var rprefix = r[1]+'@'+r[2]+'/';
+      for (var i in mems) {
+        xmppSendPresence(rprefix+mems[i].nick, stanza.attrs.from, 'member', 'participant');
+      }
+      broadcastRoom(r[1], 'presence', { nick: r[3], transport: 'jabber', affil: 'member', role: 'participant' });
+      xmppSendPresence(rprefix+'roombot', stanza.attrs.from, 'member', 'participant');
+      var p = new xmpp.Element('presence', { from: stanza.attrs.to, to: stanza.attrs.from, id: stanza.attrs.id });
+      p.c('x', { xmlns: XMLNS_MUC + '#user' })
+        .c('item', { affiliation: 'member', role: 'participant', jid: stanza.attrs.from }).up()
+        .c('status', { code: '110' }).up() // references the user itself
+        .c('status', { code: '170' }).up() // room is logged
+        .c('status', { code: '210' });     // joined the room
+      if (stanza.getChild('c')) p.cnode(stanza.getChild('c'));
+      if (stanza.getChild('priority')) p.cnode(stanza.getChild('priority'));
+
+      xmppSend("self presence stanza:",p);
+      
+      joinRoom(r[1], stanza.attrs.from, { type: 'jabber', nick: r[3], msg: xmppMessageHandler });
+      
+      xmppSendHistory(r[1], stanza.attrs.from);
+    } else {
+      var p = new xmpp.Element('presence', { from: stanza.attrs.to, to: stanza.attrs.from, id: stanza.attrs.id, type: 'error' });
+      p.c('error', { by: myJid, type: 'modify' })
+        .c('jid-malformed', { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
+      xmppSend("presence error", p);
+    }
+  }
+  if (stanza.is('message')) {
+    var r;
+    console.log("incoming message");
+    if (r = stanza.attrs.to.match(JABBER_ID_REGEX2)) {
+      var users = getRoomMembers(r[1]), user = users[stanza.attrs.from];
+      console.log(r, users, stanza.attr.from);
+      if (user) {
+        postMsg(r[1], user.nick, stanza.getChildText('body'));
+        //var data = { nick: user.nick, msg: stanza.getChildText('body') };
+        //broadcastRoom(r[1], 'message', data);
+      }
+    }
+  }
 }
 
+
+
+function xmppMessageHandler(msgType, data) {
+  switch(msgType) {
+  case "presence":
+    xmppSendPresence(data.roomName+'@'+myJid+'/'+data.nick, this.id, 'member', 'participant', data.type);
+    break;
+  case "msg":
+    var msg = xmppMessage(data.roomName, data.by, this.id, data.msg);
+    xmppSend("sending message", msg);
+  }
+}
+
+function xmppSendPresence(from, to, affil, role, type, status) {
+  var p = new xmpp.Element('presence', { from: from, to: to, id: randId() });
+  if (type) p.attrs.type = type;
+  var x = p.c('x', { xmlns: XMLNS_MUC + '#user' });
+  x.c('item', { affiliation: affil, role: role });
+  if(status) {
+    for(var i=0; i<status.length; i++) x.c('status', { code: status[i] });
+  }
+  xmppSend("xmppSendPresence", p);
+}
+
+function xmppSendHistory(room, to) {
+  getRoomHistory(room, null, 100, function(err, results) {
+    if (err) {
+      console.log("error loading history", err);
+      
+    } else {
+      for (var i = results.length - 1; i >= 0; i--) {
+        var r = results[i];
+        var msg = xmppMessage(room, r.by, to, r.msg);
+        try {
+          msg.c('delay', { xmlns: 'urn:xmpp:delay', from: room+'@'+myJid, stamp: new Date(r.ts).toISOString() });
+        } catch(e) {} //sometimes timestamp seems to be invalid
+        xmppSend("Sending History", msg);
+      }
+    }
+  })
+}
+
+function xmppMessage(room, nick, to, body) {
+  var msg = new xmpp.Element('message', { type: 'groupchat', from: room+'@'+myJid+'/'+nick, to: to, id: randId() });
+  msg.c('body').t(body);
+  return msg;
+}
+
+function xmppSend(debug, msg) {
+  console.log(">> "+debug, msg.toString());
+  component.send(msg);
+}
+
+function randId() {
+  return Math.floor(Math.random()*10000000)+1000000;
+}
+
+
 function discoReply(stanza, query) {
-    var disco = new xmpp.Element('iq', 
-                                 { type: 'result', from: myJid, to: stanza.attrs.from, id: stanza.attrs.id });
-    disco.c('query', { xmlns: query.attrs.xmlns });
-    return disco;
+  var disco = new xmpp.Element('iq', 
+                               { type: 'result', from: myJid, to: stanza.attrs.from, id: stanza.attrs.id });
+  disco.c('query', { xmlns: query.attrs.xmlns });
+  return disco;
 }
 
 
