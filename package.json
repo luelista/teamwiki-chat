@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "author": "Max Weller <max.weller@teamwiki.net>",
   "description": "simple web chat built on nodejs and socket.io for use with teamWiki",
-  "contributors": [  ],
+  "contributors": [],
   "scripts": {
     "forever": "./run_chat",
     "start": "node ./app.js"
@@ -13,20 +13,20 @@
     "type": "git",
     "url": "https://github.com/max-weller/teamwiki-chat"
   },
-  "dependencies" : {
-    "crypto"            :  "0.0.3",
-    "express"           :  "3.0.6",
-    "mongojs"           :  "0.4.6",
-    "mongoose"          :  "3.5.3",
-    "mysql"             :  "2.0.0-alpha7",
-    "node-stringprep"   :  "0.1.5",
-    "node-xmpp"         : "0.3.2",
-    "socket.io"         : "0.9.13",
-    "request"           : "2.12.0"
+  "dependencies": {
+    "crypto": "0.0.3",
+    "express": "3.0.6",
+    "mongojs": "0.4.6",
+    "mongoose": "3.5.3",
+    "mysql": "2.0.0-alpha7",
+    "node-stringprep": "0.1.5",
+    "node-xmpp": "0.3.2",
+    "socket.io": "0.9.13",
+    "request": "2.12.0",
+    "moment": "^2.8.1"
   },
   "license": "MIT",
   "engines": {
     "node": ">=0.8"
   }
 }
-
