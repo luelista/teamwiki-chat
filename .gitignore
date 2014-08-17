@@ -2,3 +2,7 @@ config.js
 uploads/
 *.log
 node_modules/*
+
+*~
+\#*#
+
