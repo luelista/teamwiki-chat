@@ -158,13 +158,13 @@
      }
      socket.on('software update', function(data) {
        if (data.version > 2) onSoftwareUpdate();
+       if (runtimeId !== null && runtimeId != data.runtimeId) {
+         onSoftwareUpdate(); return;
+       }
+       runtimeId = data.runtimeId;
      });
      socket.on('online status', function (data) {
        if (data.type == "welcome") {
-         if (runtimeId !== null && runtimeId != data.runtimeId) {
-           onSoftwareUpdate(); return;
-         }
-         runtimeId = data.runtimeId;
          currentRoom = data.room;
          oldestMessageTs = data.ts;
          $("#out").empty();
@@ -314,8 +314,10 @@
      body { padding-top: 30px;}
      .pane { position:fixed; top: 0; left: 0; bottom: 0; right: 0; display: none; overflow: auto;  }
      .onlinestatbar {
-       position: fixed; top: 0; left: 0; right: 0; padding: 5px; overflow: hidden; height: 20px; white-space: nowrap; background: #ddd; border-bottom: 1px solid #ccc;
+       position: fixed; top: 0; left: 0; right: 0; padding: 8px; overflow: hidden; height: 14px; white-space: nowrap;
+       background: #ddd; border-bottom: 1px solid #ccc; font: status-bar; 
      }
+     .onlinestatbar img { vertical-align: middle; }
      .controls {
        position: fixed; bottom: 0; left: 0; right: 0; padding: 5px; border-top: 2px solid #ddd;
        background: #1e5799; /* Old browsers */

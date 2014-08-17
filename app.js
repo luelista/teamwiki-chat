@@ -1,11 +1,11 @@
 
-var db = require ('./dbconnect.js');
 var crypto = require ('crypto');
 var fs = require ('fs');
 var GCM = require ('./gcm');
 var xmpp = require('node-xmpp');
 
 var config = require('./config');
+var db = require ('./dbconnect.js')(config);
 var gcm = new GCM(config.gcm_api_key);
 
 var privateKey = fs.readFileSync(config.privateKey).toString();
@@ -16,7 +16,7 @@ var caCert = [ ];//fs.readFileSync(config.caCert1).toString(),
 var connection = new xmpp.Client({
   jid: 'anonymous@teamwiki.de',
   host: 'teamwiki.de',
-  port: config.xmppPort
+  port: 5222  //config.xmppPort
 });
 connection.on('error', function(err) {
   console.log("Jabber Connection Error: ", err);
@@ -40,7 +40,9 @@ var express = require('express')
 var app = express()
 , http = require('http')
 , https = require('https')
-, server = https.createServer({ key: privateKey, cert: certificate, ca: caCert }, app);
+, server = http.createServer(
+    //{ key: privateKey, cert: certificate, ca: caCert }, 
+    app);
 
 
 var io = require('socket.io').listen(server);
@@ -50,7 +52,7 @@ var runtimeId = Math.floor(Math.random()*100000)+1;
 var lastUpload = "";
 
 io.set('log level', 2); 
-server.listen(8443);
+server.listen(config.server_port);
 
 app.use(express.bodyParser());
 app.use('/assets', express.static(__dirname + '/assets'));
@@ -162,7 +164,7 @@ io.sockets.on('connection', function (socket) {
       
       //broadcastOnlineStatus('joined');
       socketJoinRoom("chat");
-      socket.emit('software update', {version: 2});
+      socket.emit('software update', {version: 2, runtimeId: runtimeId});
     });
     
   });
@@ -185,10 +187,15 @@ io.sockets.on('connection', function (socket) {
   
   function socketJoinRoom(nroom) {
     room = nroom;
-    broadcastRoom(room, 'presence', { nick: username, transport: 'web', affil: 'member', role: 'participant' });
-    joinRoom(room, 's_' + clientId, { nick: username });
+    var userData = { nick: username, type: 'web' };
+    broadcastRoom(room, 'presence', getPresenceMessage(userData, true));
+    joinRoom(room, 's_' + clientId, userData);
     socket.join('room_' + room);
-    socket.emit('online status', { type: 'welcome', room: room, runtimeId: runtimeId, ts: +new Date() });
+    socket.emit('online status', { type: 'welcome', room: room, ts: +new Date() });
+    var users = getRoomMembers(nroom);
+    for(var i in users) {
+      socket.emit('presence', getPresenceMessage(users[i], true));
+    }
   }
   socket.on('join room', function(data) {
     if (typeof data == "string") socketJoinRoom(data);
@@ -272,11 +279,18 @@ function getRoomHistory(roomName, beforeTs, amount, callback) {
   var cursor = db.mongo.messages.find(query).sort({_id: -1}).limit(amount).toArray(callback)
 }
 
-function postMsg(room, from, text) {
+function postMsg(room, from, text, xmppid) {
   var ts = +new Date();
-  broadcastRoom(room, 'msg', { by: from, msg: text, ts: ts });
+  
+  if (!text) console.log("skipping empty message", room,from,text,xmppid);
+  if (!xmppid) xmppid = randId();
+  
+  // broadcast to XMPP and Socket.io
+  broadcastRoom(room, 'msg', { by: from, msg: text, ts: ts, xmppid: xmppid });
+  
+  // store message in history database
   db.mongo.messages.save({
-    by: from, room: room, msg: text, ts: ts
+    by: from, room: room, msg: text, ts: ts, xmppid: xmppid
   }, function(err, msg) {
     console.log("postMsg",err,msg);
     
@@ -292,19 +306,21 @@ function joinRoom(roomName, userId, data) {
 }
 function leaveRoom(roomName, userId) {
   if (! rooms[roomName] || ! rooms[roomName][userId]) return;
-  var nick = rooms[roomName][userId].nick, trans = rooms[roomName][userId].trans;
+  var userData = rooms[roomName][userId];
   delete rooms[roomName][userId];
-  if (nick)
-    broadcastRoom(roomName, 'presence', { nick: nick, transport: trans, affil: 'member', role: 'none', type: 'unavailable' });
+  if (userData.nick)
+    broadcastRoom(roomName, 'presence', getPresenceMessage(userData, false));
 }
 function broadcastRoom(roomName, msgType, data) {
   console.log("broadcast",roomName,msgType);
   if (! rooms[roomName]) return;
   data.roomName = roomName;
+  // broadcast to Socket.IO
   io.sockets.in('room_' + roomName).emit(msgType, data);
   for (var i in rooms[roomName]) {
     console.log("...",i);
     if (rooms[roomName][i].msg) {
+        // send to XMPP via xmppMessageHandler
       rooms[roomName][i].msg(msgType, data);
     }
   }
@@ -315,6 +331,11 @@ function getRoomMembers(roomName) {
 }
 
 
+function getPresenceMessage(userData, wentOnline) {
+  var presence = { nick: userData.nick, transport: userData.type, affil: 'member', role: 'none' };
+  if (!wentOnline) presence.type = 'unavailable';
+  return presence;
+}
 
 
 
@@ -445,7 +466,8 @@ function onXmppStanza(stanza) {
       for (var i in mems) {
         xmppSendPresence(rprefix+mems[i].nick, stanza.attrs.from, 'member', 'participant');
       }
-      broadcastRoom(r[1], 'presence', { nick: r[3], transport: 'jabber', affil: 'member', role: 'participant' });
+      broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: r[3], type: 'jabber' }, true));
+      
       xmppSendPresence(rprefix+'roombot', stanza.attrs.from, 'member', 'participant');
       var p = new xmpp.Element('presence', { from: stanza.attrs.to, to: stanza.attrs.from, id: stanza.attrs.id });
       p.c('x', { xmlns: XMLNS_MUC + '#user' })
@@ -473,9 +495,9 @@ function onXmppStanza(stanza) {
     console.log("incoming message");
     if (r = stanza.attrs.to.match(JABBER_ID_REGEX2)) {
       var users = getRoomMembers(r[1]), user = users[stanza.attrs.from];
-      console.log(r, users, stanza.attr.from);
+      console.log("TO(regexResult):",r, "USERS(RoomMembers):", users, "FROM:",stanza.attrs.from);
       if (user) {
-        postMsg(r[1], user.nick, stanza.getChildText('body'));
+        postMsg(r[1], user.nick, stanza.getChildText('body'), stanza.attrs.id);
         //var data = { nick: user.nick, msg: stanza.getChildText('body') };
         //broadcastRoom(r[1], 'message', data);
       }
@@ -491,7 +513,7 @@ function xmppMessageHandler(msgType, data) {
     xmppSendPresence(data.roomName+'@'+myJid+'/'+data.nick, this.id, 'member', 'participant', data.type);
     break;
   case "msg":
-    var msg = xmppMessage(data.roomName, data.by, this.id, data.msg);
+    var msg = xmppMessage(data.roomName, data.by, this.id, data.msg, data.xmppid);
     xmppSend("sending message", msg);
   }
 }
@@ -518,6 +540,7 @@ function xmppSendHistory(room, to) {
         var msg = xmppMessage(room, r.by, to, r.msg);
         try {
           msg.c('delay', { xmlns: 'urn:xmpp:delay', from: room+'@'+myJid, stamp: new Date(r.ts).toISOString() });
+          msg.c('x', { xmlns: 'urn:xmpp:delay', from: room+'@'+myJid, stamp: new Date(r.ts).toISOString() });
         } catch(e) {} //sometimes timestamp seems to be invalid
         xmppSend("Sending History", msg);
       }
@@ -525,8 +548,9 @@ function xmppSendHistory(room, to) {
   })
 }
 
-function xmppMessage(room, nick, to, body) {
-  var msg = new xmpp.Element('message', { type: 'groupchat', from: room+'@'+myJid+'/'+nick, to: to, id: randId() });
+function xmppMessage(room, nick, to, body, msgid) {
+  if(!msgid) msgid=randId();
+  var msg = new xmpp.Element('message', { type: 'groupchat', from: room+'@'+myJid+'/'+nick, to: to, id: msgid });
   msg.c('body').t(body);
   return msg;
 }
