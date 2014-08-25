@@ -1,10 +1,13 @@
 (function runBotCommand(r, stanza_fromJid, messageText, stanza_xmppid) {
   var moment = require('moment');
   
-  var user = rooms[r[1]].members[stanza_fromJid];
-  var temp = messageText.match(/^[.#]([a-zA-Z0-9_.-]+)(\s+(.*))?$/), cmd=temp[1], params=temp[3];
+  var theRoom = rooms[r[1]];
+  var user = theRoom.members[stanza_fromJid];
+  var temp = messageText.match(/^\/(\/)?([a-zA-Z0-9_.-]+)(\s+(.*))?$/), broadcastFlag=!temp[1], cmd=temp[2], params=temp[4];
   
-  var broadcastFlag = (messageText.charAt(0)=='.');
+  function pad(a,b){return(1e15+a+"").slice(-b)}
+  
+  //var broadcastFlag = (messageText.charAt(0)=='.');
   
   function botsend(fromuser, str) {
     var fromNick = (fromuser && user && user.nick) ? user.nick : "roombot";
@@ -16,7 +19,20 @@
     }
   }
   
-  if(cmd == 'forceinvite' || cmd == 'op') broadcastFlag = false;
+  function privmsg(fromuser, tonick, str) {
+    var fromNick = (fromuser && user && user.nick) ? user.nick : "roombot";
+    var recvs = 0;
+    for(var k in theRoom.members) {
+      if (theRoom.members[k].nick == tonick) {
+        var msg = xmppMessage(r[1], fromNick, k, "[private] "+str);
+        xmppSend("bot's sending a PRIVMSG", msg);
+        recvs++;
+      }
+    }
+    return recvs;
+  }
+  
+  if(cmd == 'forceinvite' || cmd == 'forceremove' || cmd == 'op' || cmd == 'fullhistory' || cmd == 'msg' || cmd == 'w' || cmd == 'dump') broadcastFlag = false;
   
   botsend(true, messageText);
   
@@ -31,13 +47,50 @@
       var a = params.split(/ /);
       xmppJoinRoom(r[1], r[2], a[0], a[1], null);
       break;
-
+    
+    case "kick":
+      if (user.xmpprole != "moderator") break;
+      
+      break;
+    
     case "topic":
       setRoomTopic(r[1], user && user.nick || "roombot", params);
       //var msg = xmppMessage(r[1], 'roombot', stanza_fromJid, "trying to set the topic "+r.join(',')+"...");
       //xmppSend("bot's sending ack message", msg);
       break;
-  
+    
+    case "dump":
+      botsend(false, JSON.stringify(theRoom, null, '   '));
+      break;
+    
+    case "w": case "msg":
+      var a = params.match( /^(?:([^\s]+)|\"([^"]+)\")\s+(.*)$/ );
+      if (!a || !a[3]) break;
+      var target = a[1]||a[2];
+      if (!target) break;
+      var recvs = privmsg(true, target, a[3]);
+      if (recvs == 0) botsend(false, "User not found.");
+      break;
+    
+    case "prop":
+      var props = theRoom.properties || {}, m;
+      if (!params) {
+        var out="Room Properties:";
+        for(var key in props) out+="\n"+key+" = " + props[key];
+        botsend(false, out);
+      } else if (( m = params.match(/^([a-z0-9.-]+)\s*=\s*(.*)$/) )) {
+        //set property
+        if (!broadcastFlag) { botsend(false, "Will set properties only publicly."); return; }
+        setRoomProp(r[1], m[1], m[2]);
+        botsend(false, m[1] +"=\""+m[2]+"\"");
+      } else if (( m = params.match(/^([a-z0-9.-]+)(\?)?$/) )) {
+        var val = props[m[1]];
+        botsend(false, JSON.stringify(val));
+      } else {
+        botsend(false, "invalid syntax. use '/prop' to list all properties, '/prop hello?' to read property named 'hello', '/prop hello=world' to set value of property 'hello' to 'world'.");
+      }
+      break;
+    
     case "op":
       user.xmppaffil = 'admin'; user.xmpprole = 'moderator';
       broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: user.nick, type: 'jabber', id: stanza_fromJid }, true));
@@ -56,10 +109,18 @@
       botsend(false, s);
       break;
     
+    case "away":
+      user.xmppshow = params||"xa";
+      broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: user.nick, type: 'jabber', id: stanza_fromJid }, true));
+      break;
+      
     case "status":case "s":
       if (params) {
         var username = stanza_fromJid.replace(/\/.*$/, "");
         db.mongo.userinfo.update({user:username}, {$set:{statusMessage: params, changed:''+new Date()}}, {upsert:true});
+        user.xmppstatus = params;
+        broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: user.nick, type: 'jabber', id: stanza_fromJid }, true));
+        
       } else {
         var people = rooms[r[1]].members, ids = {};
         for(var k in people) ids[k.replace(/\/.*$/, "")] = '';
@@ -90,7 +151,6 @@
       if (diff < 1) { botsend(false, 'Sorry, you already missed that event...'); return; }
       botsend(false,'I took a note to remember you in '+diff+' milliseconds');// '+ then.format('LLLL'));
       
-      
       broadcastFlag = !m[1];
       
       setTimeout(function() {
@@ -98,25 +158,58 @@
       }, diff);
       break;
     
+    case "start":
+      theRoom.stopwatchStart = new Date();
+      break;
+    
+    case "stop":
+      var diff = moment.duration(new Date() - theRoom.stopwatchStart, "ms");
+      var txt = "" + (diff.asDays() > 1 ? Math.floor(diff.asDays())+" days " : "") + (diff.hours() > 0 ? pad(diff.hours(),2)+":" : "") + pad(diff.minutes(),2)+":"  + pad(diff.seconds(),2) ;
+      botsend(false, "stopwatch: "+txt);
+      break;
+    
+    case "tea":
+      if (!params) {
+        if (user.teaTimer) {
+          var diff=moment.duration(user.teaTimer-new Date());
+          botsend(false, user.nick+": Your tea will be ready in "+(diff.asMinutes()>=1?Math.floor(diff.asMinutes())+" minutes and ":"")+diff.seconds()+" seconds");
+        }
+        else botsend(false, "You don't have a tea timer running");
+      }
+      if(user.teaTimerHandle){clearTimeout(user.teaTimerHandle);user.teaTimer=null;user.teaTimerHandle=null; }
+      
+      var m=params.match(/^([0-9]{1,2})(?:[:.]([0-9]{1,2}))?(.*)$/);
+      if (!m) { botsend(false, 'I didn\'t understand your date format...\r\n  .tea <mm>[:<ss>] [<note to display>]'); return; }
+      var interval = m[1]*60000;
+      if(m[2]) interval += m[2]*1000;
+      user.teaTimer = (new Date()).valueOf()+interval;
+      
+      
+      user.teaTimerHandle = setTimeout(function() {
+        botsend(false, m[3]||user.nick+": Your tea is ready!");
+        user.teaTimer = null; user.teaTimerHandle = null;
+      }, interval);
+      break;
+      
     case "help": case "hilfe":
       botsend(false,
-                  'I listen to .command and #command. #commands are answered in private, .commands publicly. '+
+                  'I listen to /command and //command. //commands are answered in private, /commands publicly. '+
               '\r\nThese are words I understand:'+
-              '\r\n  .ping'+
-              '\r\n  .time'+
-              '\r\n  .spruch'+
-              '\r\n  .topic <new room subject>'+
-              '\r\n  .status <your new status>'+
-              '\r\n  .status'+
-              '\r\n  .remind [me] [tomorrow|in <n> days|<dd>.<mm>.] <hh>:<mm> <note to display>'+
-              '\r\n  .s, .rem are valid abbreviations'+
-	      '\r\n  .fullhistory <number of stanzas>');
+              '\r\n  /ping'+
+              '\r\n  /time'+
+              '\r\n  /spruch'+
+              '\r\n  /topic <new room subject>'+
+              '\r\n  /status <your new status>'+
+              '\r\n  /status'+
+              '\r\n  /remind [me] [tomorrow|in <n> days|<dd>.<mm>.] <hh>:<mm> <note to display>'+
+              '\r\n  /s, /rem are valid abbreviations'+
+              '\r\n  /fullhistory <number of stanzas>');
       break;
     
     case "fullhistory":
       broadcastFlag = false;
       if (parseInt(params,10)<=1) { botsend(false, 'Please tell me the number of stanzas you want.'); break; }
-      xmppSendHistory(r[1], stanza_fromJid, {attrs: {maxstanzas: params }} );
+      xmppSendHistory(r[1], stanza_fromJid, {attrs: {maxstanzas: parseInt(params,10) }} );
       break;
     
     default:
@@ -124,5 +217,8 @@
       break;
     
   }
+  
+  
+  
   
 })

@@ -9,7 +9,15 @@ var config = configModule['app_muc'];
 
 var db = require ('./dbconnect2.js')(config);
 
-
+console.log("\n---------------------------------------------\n\
+app_muc.js 1.0\n\
+Copyright (c) 2014 Max Weller\n\
+This program comes with ABSOLUTELY NO WARRANTY; This is free software, and\n\
+you are welcome to redistribute it under certain conditions; see LICENSE\n\
+file in this folder for details.\n\
+---------------------------------------------\n\
+");
+console.log(new Date());
 
 var component = new xmpp.Component({
   jid: config.xmppComponentJid,
@@ -34,7 +42,7 @@ var rooms = {};
 
 //--> Initialization
 db.mongo.rooms.find().toArray(function(err, results) {
-    if(err) { console.log("couldnt read rooms from database"); return; }
+    if(err) { console.log(" ! couldnt read rooms from database"); return; }
     
     for(var i in results) {
       var name = results[i].name;
@@ -46,10 +54,19 @@ db.mongo.rooms.find().toArray(function(err, results) {
     }
 });
 
+db.mongo.userinfo.find().toArray(function(err, results) {
+    if(err) { console.log(" ! couldnt read userInfo from database"); return; }
+    
+    for(var i in results) {
+      var name = results[i].user;
+      connectedUsers[name] = results[i];
+    }
+});
+
 
 
 var XMLNS_MUC = "http://jabber.org/protocol/muc";
-var JABBER_ID_REGEX = /^([a-zA-Z0-9_.#%-]+)@([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/;
+var JABBER_ID_REGEX = /^([a-zA-Z0-9_.#%-]+)@([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_. %-]+)$/;
 var JABBER_ID_REGEX_LIBERAL = /^([a-zA-Z0-9_.#%-]+)@([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.#% ŠšŸ€…†§-]+)$/;
 var JABBER_ID_REGEX2 = /^([a-zA-Z0-9_.#%-]+)@([a-zA-Z0-9_.-]+)/;
 var myJid = config.xmppComponentJid;
@@ -64,7 +81,7 @@ component.on('online', function() {
 });
 
 component.on('error', function(e) {
-  console.error("XMPP error: ", e);
+  console.error(" ! XMPP error: " + e);
 });
 
 
@@ -91,7 +108,7 @@ function postMsg(room, from, text, xmppid, jid) {
   db.mongo.messages.save({
     by: from, room: room, msg: text, ts: ts, xmppid: xmppid, jid: jid
   }, function(err, msg) {
-    console.log("postMsg",err,msg);
+    console.log("   postMsg",err,msg);
   });
 }
 
@@ -116,7 +133,7 @@ function joinRoom(roomName, userId, data) {
   var set = { $set: {} }; set.$set["members."+dotescape(userId)] = data;
   db.mongo.rooms.update({ name: roomName }, set);
 }
-function leaveRoom(roomName, userId) {
+function leaveRoom(roomName, userId, optional_Status) {
   if (! rooms[roomName] || ! rooms[roomName].members[userId]) return;
   var userData = rooms[roomName].members[userId];
   delete rooms[roomName].members[userId];
@@ -125,7 +142,7 @@ function leaveRoom(roomName, userId) {
   db.mongo.rooms.update({ name: roomName }, set);
   
   if (userData.nick)
-    broadcastRoom(roomName, 'presence', getPresenceMessage(userData, false));
+    broadcastRoom(roomName, 'presence', getPresenceMessage(userData, false, optional_Status));
 }
 function broadcastRoom(roomName, msgType, data) {
   console.log("broadcast",roomName,msgType);
@@ -144,10 +161,30 @@ function getRoomMembers(roomName) {
   makeSureRoomExists(roomName);
   return rooms[roomName].members;
 }
+function getRoomMember(roomName, name) {
+  makeSureRoomExists(roomName);
+  var mem= rooms[roomName].members;
+  if (mem) return mem[name];
+}
 
 
-function getPresenceMessage(userData, wentOnline) {
-  var presence = { nick: userData.nick, transport: userData.type, affil: 'member', role: 'none' };
+function getUserInfo(userJid, item) {
+  var username = userJid.replace(/\/.*$/, "");
+  if(!connectedUsers[username]) connectedUsers[username] = {};
+  if (item) return connectedUsers[username][item];
+  return connectedUsers[username];
+}
+function storeUserInfo(userJid) {
+  var username = userJid.replace(/\/.*$/, "");
+  var info = getUserInfo(userJid);
+  info.changed = ''+new Date();
+  info.user = username;
+  db.mongo.userinfo.update({user:username}, info, {upsert:true});
+}
+
+
+function getPresenceMessage(userData, wentOnline, optional_Status) {
+  var presence = { nick: userData.nick, transport: userData.type, id: userData.id, status: optional_Status };
   if (!wentOnline) presence.type = 'unavailable';
   return presence;
 }
@@ -158,13 +195,15 @@ function getPresenceMessage(userData, wentOnline) {
 //==> Handle Incoming Stanzas
 
 function onXmppStanza(stanza) {
-  console.log('-- Received stanza: ', stanza.toString());
+  console.log('--- Received stanza: ', stanza.toString());
+  
+  if (stanza.getChild('error')) console.log(" ! ERROR STANZA");
   
   //--> iq stanza (service discovery)
   if (stanza.is('iq') && stanza.attrs.type == 'get') {
     var recp = stanza.attrs.to.split(/@/);
     
-    //-->  - chat service announcement
+    //-->  - chat service announcement, list all chatrooms
     if (recp.length == 1 && recp[0] == myJid) {
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
         var disco = discoReply(stanza, query), d = disco.getChild('query');
@@ -174,26 +213,34 @@ function onXmppStanza(stanza) {
       }
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
         var disco = discoReply(stanza, query), d = disco.getChild('query');
-        for (var i in rooms)
-          d.c('item', { jid: i + '@' + myJid, name: i });
+        for (var i in rooms) {
+          if (rooms[i].properties && rooms[i].properties.hidden == "true") continue;
+          d.c('item', { jid: i + '@' + myJid, name: rooms[i].subject||i });
+        }
         xmppSend("sent items stanza : ", disco);
       }
     }
     
-    //--> - list all chatrooms
+    //--> - chatroom details, member list
     if (recp.length == 2 && recp[1] == myJid) {
       var room = rooms[recp[0]];
-      if (room) {
+      if (room && ! (room.properties && room.properties.hidden == "true") ) {
         if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
           var disco = discoReply(stanza, query), d = disco.getChild('query');
-          d.c('identity', { category: 'conference', type: 'text', name: 'The Chat' });
+          disco.attrs.from = stanza.attrs.to;
+          d.c('identity', { category: 'conference', type: 'text', name: room.subject||recp[0] });
+          d.c('feature', { 'var': XMLNS_MUC });
           d.c('feature', { 'var': 'muc_open' });
           d.c('feature', { 'var': 'muc_permanent' });
           d.c('feature', { 'var': 'muc_public' });
+          if(room.properties && room.properties['password-required'])
+            d.c('feature', { 'var': 'muc_passwordprotected' });
+          
           xmppSend("sent info stanza : ", disco);
         }
         if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
           var disco = discoReply(stanza, query), d = disco.getChild('query');
+          disco.attrs.from = stanza.attrs.to;
           for(var i in room.members)
             d.c('item', { jid: stanza.attrs.to + '/' + room.members[i].nick });
           xmppSend("sent items stanza : ", disco);
@@ -204,17 +251,19 @@ function onXmppStanza(stanza) {
       }
     }
     
-    //--> - details about chatroom
+    //--> - details about chatroom occupants
     if (recp = stanza.attrs.to.match(JABBER_ID_REGEX)) {
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
         var disco = discoReply(stanza, query), d = disco.getChild('query');
+        disco.attrs.from = stanza.attrs.to;
         d.c('identity', { category: 'client', type: 'pc' });
         d.c('feature', { 'var': XMLNS_MUC });
         // TODO XEP-0045 6.7 - contact the client for real data
-        xmppSend("sent info stanza : ", disco);
+        xmppSend("sent info stanza from "+disco.attrs.from+" : ", disco);
       }
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
         var disco = discoReply(stanza, query), d = disco.getChild('query');
+        disco.attrs.from = stanza.attrs.to;
         xmppSend("sent items stanza : ", disco);
       }
       if (query = stanza.getChild('vCard', "vcard-temp")) {
@@ -236,11 +285,12 @@ function onXmppStanza(stanza) {
         
         return;
       }
-      var xMucChild = stanza.getChild("x", "http://jabber.org/protocol/muc"), historyChild = null;
+      var xMucChild = stanza.getChild("x", "http://jabber.org/protocol/muc"), historyChild = null, passwdProvided = null;
       if (xMucChild) {
         historyChild = xMucChild.getChild("history");
+        passwdProvided = xMucChild.getChildText("password");
       }
-      xmppJoinRoom(r[1], r[2], r[3], stanza.attrs.from, historyChild);
+      xmppJoinRoom(r[1], r[2], r[3], stanza.attrs.from, historyChild, passwdProvided);
     
     /*
        clients do not support it... (at least jitsi)
@@ -255,6 +305,7 @@ function onXmppStanza(stanza) {
     
     } else {
       var p = new xmpp.Element('presence', { from: stanza.attrs.to, to: stanza.attrs.from, id: stanza.attrs.id, type: 'error' });
+      p.c('x', { 'xmlns': XMLNS_MUC });
       p.c('error', { by: myJid, type: 'modify' })
         .c('jid-malformed', { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
       xmppSend("presence error", p);
@@ -267,20 +318,40 @@ function onXmppStanza(stanza) {
   //--> message stanza
   if (stanza.is('message')) {
     var r;
-    console.log("incoming message");
+    console.log("   INCOMING MESSAGE ");
     if (( r = stanza.attrs.to.match(JABBER_ID_REGEX2) )) {
       var users = getRoomMembers(r[1]), user = users[stanza.attrs.from];
-      console.log("TO(regexResult):",r, "USERS(RoomMembers):", users, "FROM:",stanza.attrs.from);
+      console.log("   TO(regexResult):",""+r, "FROM:",stanza.attrs.from);
       if (user) {
-        if (( body = stanza.getChild('body') )) {
+        
+        // if it is a valid room member, decide on the child tags
+        
+        if (( error = stanza.getChild('error') )) {
+            // throw out ghost users
+            var errStr = "Left because of error : ";
+            try { errStr += error.children[0].name; }
+            catch(exc) { errStr += (""+error); }
+            
+            leaveRoom(r[1], stanza.attrs.from, errStr);
+            xmppSendPresence(stanza.attrs.to, stanza.attrs.from, 'member', 'none', 'unavailable', [ '110' ], null, null, errStr);
+            
+            
+        } else if (( body = stanza.getChild('body') )) {
+            // pass along regular messages
+            
             var messageText = stanza.getChildText('body');
-            if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)==".")) {
+            if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="." || messageText.charAt(0)=="/")) {
               runBotCommand(r, stanza.attrs.from, messageText, stanza.attrs.id);
+            } else if (isMessageOverlyLong(rooms[r[1]], messageText)) {
+              storePastebin(messageText, function(newMsg) {
+                postMsg(r[1], user.nick, newMsg, stanza.attrs.id, stanza.attrs.from);
+              });
             } else {
               postMsg(r[1], user.nick, messageText, stanza.attrs.id, stanza.attrs.from);
             }
             
         } else if (( subject = stanza.getChild('subject') )) {
+            // room subject changes
             setRoomTopic(r[1], user.nick, stanza.getChildText('subject'));
             
         }
@@ -297,7 +368,7 @@ function runBotCommand(stanza_roomArray, stanza_fromJid, messageText) {
     try {
       eval(result.toString())(stanza_roomArray, stanza_fromJid, messageText);
     } catch(err) {
-      console.log("BOT ERR:", err);
+      console.log(" ! BOT ERR:", err);
     }
   })
 }
@@ -310,18 +381,53 @@ function setRoomTopic(room, fromNick, topic) {
   
 }
 
-function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_joinerJid, historyChild) {
+function setRoomProp(room, propName, propValue) {
+  var set = { $set: {  } }; set.$set["properties."+propName] = propValue;
+  db.mongo.rooms.update({ name: room }, set);
+  if(!rooms[room].properties)rooms[room].properties = {};
+  rooms[room].properties[propName] = propValue;
+}
+function getRoomProp(room, propName, defaultVal, minimumIntVal) {
+  if(!rooms[room].properties)rooms[room].properties = {};
+  var val = rooms[room].properties[propName];
   
-  console.log("JOIN: ",stanza_room,stanza_roomNick);
+  if (!val) return defaultVal; else {
+    if(minimumIntVal) val=Math.max(minimumIntVal, parseInt(val, 10));
+    
+    return val;
+  }
+}
+
+function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_joinerJid, historyChild, passwdProvided) {
+  
   var mems = getRoomMembers(stanza_room);
   var rprefix = stanza_room+'@'+stanza_roomHost+'/';
+  
+  var alreadyIn = (stanza_joinerJid in mems);
+  var passwdReq = getRoomProp(stanza_room, "password-required", "");
+  
+  console.log("+++ JOIN: ",stanza_room,stanza_roomNick,"alreadyIn:"+alreadyIn,"passw/"+passwdProvided+"/"+passwdReq);
+  
+  if (!alreadyIn && passwdReq && passwdProvided!=passwdReq) {
+    var p = new xmpp.Element('presence', { from: rprefix+stanza_roomNick, to: stanza_joinerJid,  type: 'error' });
+    p.c('x', { 'xmlns': XMLNS_MUC });
+    p.c('error', { by: myJid, type: 'modify' })
+      .c('not-authorized', { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
+    xmppSend("presence error - passwd required", p);
+    
+    xmppErrMes(stanza_joinerJid, "Unable to join room "+rprefix+" - access denied (password).");
+    return;
+  }
+  
+  
   for (var i in mems) {
-    xmppSendPresence(rprefix+mems[i].nick, stanza_joinerJid, mems[i].xmppaffil||'member', mems[i].xmpprole||'participant', null, null, mems[i].id);
+    xmppSendPresence(rprefix+mems[i].nick, stanza_joinerJid, mems[i].xmppaffil||'member', mems[i].xmpprole||'participant', null, null, mems[i].id, mems[i].xmppshow);
   }
   broadcastRoom(stanza_room, 'presence', getPresenceMessage({ nick: stanza_roomNick, type: 'jabber', id: stanza_joinerJid }, true));
   
   xmppSendPresence(rprefix+'roombot', stanza_joinerJid, 'member', 'participant');
   var p = new xmpp.Element('presence', { from: rprefix+stanza_roomNick, to: stanza_joinerJid, id: stanza_joinerJid });
+  p.c('status').body(getUserInfo(stanza_joinerJid, "statusMessage"));
   p.c('x', { xmlns: XMLNS_MUC + '#user' })
     .c('item', { affiliation: 'member', role: 'participant', jid: stanza_joinerJid }).up()
     .c('status', { code: '110' }).up() // references the user itself
@@ -333,13 +439,17 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
 
   xmppSend("self presence stanza:",p);
   
+  
   joinRoom(stanza_room, stanza_joinerJid, { type: 'jabber', nick: stanza_roomNick, msg: xmppMessageHandler });
   
-  
-  xmppSendHistory(stanza_room, stanza_joinerJid, historyChild);
-  
-  var subj_msg = xmppSubjectMessage(stanza_room, 'roombot', stanza_joinerJid, rooms[stanza_room].subject);
-  xmppSend("subject message:", subj_msg);
+  // avoid history-resend on away change (adium...)
+  if (!alreadyIn || historyChild) {
+    xmppSendHistory(stanza_room, stanza_joinerJid, historyChild);
+    
+    var subj_msg = xmppSubjectMessage(stanza_room, 'roombot', stanza_joinerJid, rooms[stanza_room].subject);
+    xmppSend("subject message:", subj_msg);
+    
+  }
   
 }
 
@@ -348,7 +458,13 @@ function xmppMessageHandler(msgType, data) {
   switch(msgType) {
   case "presence":
     var stat = (this.id == data.id) ? [110] : null;
-    xmppSendPresence(data.roomName+'@'+myJid+'/'+data.nick, this.id, this.xmppaffil||'member', this.xmpprole||'participant', data.type, stat, data.id);
+    var member = getRoomMember(data.roomName, data.id);
+    var xmppshow = member && member.xmppshow,
+        xmppaffil = member && member.xmppaffil,
+        xmpprole = member && member.xmpprole;
+    console.log("   messageHandler(presence)", member, xmppshow);
+    xmppSendPresence(data.roomName+'@'+myJid+'/'+data.nick, this.id, xmppaffil||'member', xmpprole||'participant',
+                     data.type, stat, data.id, xmppshow, data.status);
     break;
   case "msg":
     var msg = xmppMessage(data.roomName, data.by, this.id, data.msg, data.xmppid);
@@ -361,7 +477,7 @@ function xmppMessageHandler(msgType, data) {
   }
 }
 
-function xmppSendPresence(from, to, affil, role, type, status, fromJid) {
+function xmppSendPresence(from, to, affil, role, type, status, fromJid, xmppShow, xmppStatus) {
   var p = new xmpp.Element('presence', { from: from, to: to, id: randId() });
   if (type) p.attrs.type = type;
   var x = p.c('x', { xmlns: XMLNS_MUC + '#user' });
@@ -369,6 +485,9 @@ function xmppSendPresence(from, to, affil, role, type, status, fromJid) {
   if(status) {
     for(var i=0; i<status.length; i++) x.c('status', { code: status[i] });
   }
+  if (xmppShow) p.c('show').t(xmppShow);
+  if (xmppStatus) p.c('status').t(xmppStatus);
+  else if (fromJid) p.c('status').body(getUserInfo(fromJid, "statusMessage"));
   xmppSend("xmppSendPresence", p);
 }
 
@@ -426,7 +545,7 @@ function xmppErrMes(to, body) {
 }
 
 function xmppSend(debug, msg) {
-  console.log(">> "+debug, msg.toString());
+  console.log(" > "+debug, "\t", msg.toString());
   component.send(msg);
 }
 
@@ -438,10 +557,38 @@ function randId() {
 function discoReply(stanza, query) {
   var disco = new xmpp.Element('iq', 
                                { type: 'result', from: myJid, to: stanza.attrs.from, id: stanza.attrs.id });
-  disco.c('query', { xmlns: query.attrs.xmlns });
+  disco.c('query', { xmlns: query && query.attrs.xmlns });
   return disco;
 }
 
 
+function isMessageOverlyLong(roomInfo, messageText) {
+  if (messageText.length >= getRoomProp(roomInfo.name, "paste-min-length", 750, 140))
+    return true;
+  var lines=messageText.split("\n");
+  if (lines.length >= getRoomProp(roomInfo.name, "paste-min-lines", 7, 2)) return true;
+  return false;
+}
+
+//HACK HACK HACK
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+function storePastebin(messageText, callback) {
+  var request = require('request');
+
+  request.post(
+      { uri: 'https://paste.teamwiki.de/api/',
+      rejectUnauthorized: false, form: { content: messageText, lexer: 'plain', format: 'url', expires: 'never' } },
+      function (error, response, body) {
+          if (!error && response.statusCode == 200) {
+            messageText=messageText.substr(0,messageText.indexOf("\n")==-1?300:messageText.indexOf("\n"));
+              callback(messageText+"\n"+"[*** snip  "+body.toString().trim()+"  ***]");
+          } else {
+            console.log(" ! Unable to shorten message: ",error,response&&response.statusCode,body);
+            callback(messageText);
+          }
+      }
+  );
+}
 
 
