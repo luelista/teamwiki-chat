@@ -16,7 +16,7 @@ License
 
 The source code of teamwiki itself will be released in the soon future.
 
-This code (teamwiki-chat) is licensed under the [MIT license](http://opensource.org/licenses/MIT). Feel free to use parts from it.
+This code (teamwiki-chat) is licensed under the General Public License v3. 
 
 
 
