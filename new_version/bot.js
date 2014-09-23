@@ -14,7 +14,7 @@
     if (broadcastFlag) {
       postMsg(r[1], fromNick, str, fromuser?stanza_xmppid:null);
     } else {
-      var msg = xmppMessage(r[1], fromNick, stanza_fromJid, "[private] "+str);
+      var msg = xmppMessage(r[1], fromNick, stanza_fromJid, "[private] "+str, fromuser?stanza_xmppid:null, new Date());
       xmppSend("bot's sending a message", msg);
     }
   }
@@ -32,7 +32,7 @@
     return recvs;
   }
   
-  if(cmd == 'forceinvite' || cmd == 'forceremove' || cmd == 'op' || cmd == 'fullhistory' || cmd == 'msg' || cmd == 'w' || cmd == 'dump') broadcastFlag = false;
+  if(cmd == 'forceinvite' || cmd == 'who' || cmd == 'forceremove' || cmd == 'op' || cmd == 'fullhistory' || cmd == 'msg' || cmd == 'w' || cmd == 'dump') broadcastFlag = false;
   
   botsend(true, messageText);
   
@@ -91,6 +91,16 @@
       }
       break;
     
+    case "airgram-subscribe":
+      if ((!params) || params.indexOf("@")<1) { botsend(false, "Failed: please provide email address as parameter."); }
+      params=params.trim();
+      var subscribers = getRoomProp(r[1], "notify-airgram", "");
+      if (subscribers.length>0) subscribers += ",";
+      subscribers += params;
+      setRoomProp(r[1], "notify-airgram", subscribers);
+      subscribeToAirgram(params);
+      botsend(false, "You're subscribed to this room now.");
+      
     case "op":
       user.xmppaffil = 'admin'; user.xmpprole = 'moderator';
       broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: user.nick, type: 'jabber', id: stanza_fromJid }, true));
@@ -116,9 +126,9 @@
       
     case "status":case "s":
       if (params) {
-        var username = stanza_fromJid.replace(/\/.*$/, "");
-        db.mongo.userinfo.update({user:username}, {$set:{statusMessage: params, changed:''+new Date()}}, {upsert:true});
-        user.xmppstatus = params;
+        //var username = stanza_fromJid.replace(/\/.*$/, "");
+        //db.mongo.userinfo.update({user:username}, {$set:{statusMessage: params, changed:''+new Date()}}, {upsert:true});
+        storeUserInfo(stanza_fromJid, "statusMessage", params);
         broadcastRoom(r[1], 'presence', getPresenceMessage({ nick: user.nick, type: 'jabber', id: stanza_fromJid }, true));
         
       } else {
@@ -128,9 +138,9 @@
           for(var k in results) {
             ids[results[k].user] = results[k].statusMessage || '';
           }
-          var out=[];
+          var out=[];    if(!broadcastFlag) out.push("");
           for(var k in ids) {
-            out.push(k+": "+ids[k]);
+            out.push("* " +k+": "+ids[k]);
           }
           botsend(false, out.join('\r\n'));
         });
@@ -138,11 +148,11 @@
       break;
     
     case "event":case "remind":case "remember":case "rem":
-      var m=params.match(/^(me )?(tomorrow |(in |\+)([0-9]+) d(ays)? |([0-9]{1,2}\.[0-9]{1,2}) )?([0-9]{1,2}):([0-9]{1,2}) (.*)$/);
+      var m=params.match(/^(me )?(tomorrow |(in |\+)([0-9]+) d(ays)? |([0-9]{1,2}\.[0-9]{1,2})\.? )?([0-9]{1,2}):([0-9]{1,2}) (.*)$/);
       if (!m) { botsend(false, 'I didn\'t understand your date format...\r\n  .remember [me] [tomorrow|in <n> days|<dd>.<mm>.] <hh>:<mm> <note to display>'); return; }
       
       var then = moment().startOf('day');
-      if (m[2] == "tomorrow") then=then.add('days', 1);
+      if (m[2] == "tomorrow ") then=then.add('days', 1);
       if (m[4]) then=then.add('days', m[4]);
       if (m[6]) then=moment(m[6], 'DD.MM');
       then=then.hours(m[7]).minutes(m[8]);
@@ -153,11 +163,21 @@
       
       broadcastFlag = !m[1];
       
-      setTimeout(function() {
+      var events = getRoomProp(theRoom.name, "event-notifiers", []);
+
+      var id = setTimeout(function() {
         botsend(false, m[9]);
       }, diff);
+      events.push({ dateTime: then.format("ddd, H:mm"), timestamp: then.valueOf(), notice: m[9], timer: id });
+      setRoomProp(theRoom.name, "event-notifiers", events);
       break;
     
+    case "events":
+      var events = getRoomProp(theRoom.name, "event-notifiers", []);
+      for(var i in events) botsend(false, events[i].dateTime + " - " + events[i].notice);
+      if (events.length == 0) botsend(false, "No events there");
+      
+      break;
     case "start":
       theRoom.stopwatchStart = new Date();
       break;
@@ -179,7 +199,7 @@
       if(user.teaTimerHandle){clearTimeout(user.teaTimerHandle);user.teaTimer=null;user.teaTimerHandle=null; }
       
       var m=params.match(/^([0-9]{1,2})(?:[:.]([0-9]{1,2}))?(.*)$/);
-      if (!m) { botsend(false, 'I didn\'t understand your date format...\r\n  .tea <mm>[:<ss>] [<note to display>]'); return; }
+      if (!m) { botsend(false, 'I didn\'t understand your date format...\r\n  /tea <mm>[:<ss>] [<note to display>]'); return; }
       var interval = m[1]*60000;
       if(m[2]) interval += m[2]*1000;
       user.teaTimer = (new Date()).valueOf()+interval;
@@ -202,8 +222,25 @@
               '\r\n  /status <your new status>'+
               '\r\n  /status'+
               '\r\n  /remind [me] [tomorrow|in <n> days|<dd>.<mm>.] <hh>:<mm> <note to display>'+
+              '\r\n  /tea <mm>[:<ss>] [<note to display>]'+
+              '\r\n  /start, /stop (simple stop watch)'+
+              '\r\n  /msg "<nickname>" <private message to send>'+
+              '\r\n  /prop <property name>[ = <property value>]'+
               '\r\n  /s, /rem are valid abbreviations'+
               '\r\n  /fullhistory <number of stanzas>');
+      break;
+    
+    case "who":
+      broadcastFlag = false;
+      var nicks = {};
+      for(var  i in theRoom.members) {
+        var m = theRoom.members[i];
+        if(!nicks[m.nick]) nicks[m.nick] = [];
+        nicks[m.nick].push(m.id);
+      }
+      var out="";
+      for(var nick in nicks) out+="\n"+nick+" --> "+(nicks[nick].join(", "));
+      botsend(false, out);
       break;
     
     case "fullhistory":
@@ -213,6 +250,7 @@
       break;
     
     default:
+      broadcastFlag = false;
       botsend(false, "I don't know about "+cmd+"...");
       break;
     

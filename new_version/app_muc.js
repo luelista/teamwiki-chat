@@ -1,14 +1,4 @@
-
-var crypto = require ('crypto');
-var fs = require ('fs');
-var xmpp = require('node-xmpp');
-
-var configModule = require('./config');
-
-var config = configModule['app_muc'];
-
-var db = require ('./dbconnect2.js')(config);
-
+#!/usr/bin/env node
 console.log("\n---------------------------------------------\n\
 app_muc.js 1.0\n\
 Copyright (c) 2014 Max Weller\n\
@@ -17,6 +7,21 @@ you are welcome to redistribute it under certain conditions; see LICENSE\n\
 file in this folder for details.\n\
 ---------------------------------------------\n\
 ");
+
+var crypto = require ('crypto');
+var fs = require ('fs');
+var xmpp = require('node-xmpp');
+var JID = xmpp.JID;
+
+var configModule = require('./config');
+
+var configSection = process.env.APP_CONFIG || 'app_muc'
+var config = configModule[configSection];
+
+console.log("Using configuration section:    " + configSection);
+
+var db = require ('./dbconnect2.js')(config);
+
 console.log(new Date());
 
 var component = new xmpp.Component({
@@ -75,10 +80,10 @@ var myJid = config.xmppComponentJid;
 
 component.on('online', function() {
   console.log('Component is online as '+myJid)
-  component.on('stanza', onXmppStanza);
   // nodejs has nothing left to do and will exit
   //component.end()
 });
+component.on('stanza', onXmppStanza);
 
 component.on('error', function(e) {
   console.error(" ! XMPP error: " + e);
@@ -86,30 +91,61 @@ component.on('error', function(e) {
 
 
 
-function getRoomHistory(roomName, beforeTs, amount, afterTs, callback) {
+function getRoomHistory(roomName, beforeTs, amount, afterTs, callbackIter) {
   var query = {};
   if (beforeTs) query.ts = { $lt: beforeTs };
   if (afterTs) query.ts = { $gt: afterTs };
   if (beforeTs && afterTs) query.ts = { $lt: beforeTs, $gt: afterTs };
   query.room = roomName;
 
-  var cursor = db.mongo.messages.find(query).sort({_id: -1}).limit(amount).toArray(callback)
+  var cursor = db.mongo.messages.find(query); //.sort({_id: -1}).limit(amount).sort({_id: 1});
+  //.toArray(callback)
+  cursor.count(function(err, countNr) {
+    if (err) callbackIter(err, null);
+    else {
+      cursor.sort({_id: 1}).skip(Math.max(0,countNr-amount)).forEach(callbackIter);
+    }
+  })
+  //cursor.forEach(callbackIter);
 }
 
-function postMsg(room, from, text, xmppid, jid) {
+function getReplacementId(xmppchildren) {
+  //search for <replace id='bad1' xmlns='urn:xmpp:message-correct:0'/>
+  if (!xmppchildren) return undefined;
+  for(var k in xmppchildren) {
+    if (xmppchildren[k].is('replace', 'urn:xmpp:message-correct:0')) {
+      return xmppchildren[k].attrs.id;
+    }
+  }
+  return undefined;
+}
+
+function postMsg(room, from, text, xmppid, jid, xmppchildren) {
   var ts = +new Date();
   
   if (!xmppid) xmppid = randId();
   
   // broadcast to XMPP and Socket.io
-  broadcastRoom(room, 'msg', { by: from, msg: text, ts: ts, xmppid: xmppid });
+  broadcastRoom(room, 'msg', { by: from, msg: text, ts: ts, xmppid: xmppid, xmppchildren: xmppchildren });
   
-  // store message in history database
-  db.mongo.messages.save({
-    by: from, room: room, msg: text, ts: ts, xmppid: xmppid, jid: jid
-  }, function(err, msg) {
-    console.log("   postMsg",err,msg);
-  });
+  if (text !== null) {
+      // store message in history database
+      db.mongo.messages.save({
+        by: from, room: room, msg: text, ts: ts, xmppid: xmppid, jid: jid, replacexmppid: getReplacementId(xmppchildren)
+      }, function(err, msg) {
+        console.log("   postMsg",err,msg);
+      });
+      
+      var notify = getRoomProp(room, "notify-airgram", "").split(/,\s*/);
+      for(var i in notify) {
+        if(notify[i])pushToAirgram(notify[i], room+"/"+from+": "+text);
+      }
+      
+      var notify2 = getRoomProp(room, "notify-boxcar", "").split(/,\s*/);
+      for(var i in notify2) {
+        if(notify2[i])pushToBoxcar(notify2[i], from+": "+text.substr(0,60), text);
+      }
+  }
 }
 
 
@@ -166,7 +202,16 @@ function getRoomMember(roomName, name) {
   var mem= rooms[roomName].members;
   if (mem) return mem[name];
 }
-
+function checkRoomNick(roomName, nick) {
+  makeSureRoomExists(roomName);
+  var mem= rooms[roomName].members, nickPrep = nick.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+  for(var k in mem) {
+    var nick2 = mem[k].nick.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+    if (nickPrep == nick2) {
+      return mem[k];
+    }
+  }
+}
 
 function getUserInfo(userJid, item) {
   var username = userJid.replace(/\/.*$/, "");
@@ -174,9 +219,10 @@ function getUserInfo(userJid, item) {
   if (item) return connectedUsers[username][item];
   return connectedUsers[username];
 }
-function storeUserInfo(userJid) {
+function storeUserInfo(userJid, key, value) {
   var username = userJid.replace(/\/.*$/, "");
   var info = getUserInfo(userJid);
+  if (key) info[key] = value;
   info.changed = ''+new Date();
   info.user = username;
   db.mongo.userinfo.update({user:username}, info, {upsert:true});
@@ -184,7 +230,11 @@ function storeUserInfo(userJid) {
 
 
 function getPresenceMessage(userData, wentOnline, optional_Status) {
-  var presence = { nick: userData.nick, transport: userData.type, id: userData.id, status: optional_Status };
+  var presence = {};
+  for(var i in userData) presence[i]=userData[i];
+  presence.nick = userData.nick; presence.transport = userData.type; presence.id = userData.id;
+  presence.status = optional_Status;
+  presence.type = null;
   if (!wentOnline) presence.type = 'unavailable';
   return presence;
 }
@@ -278,19 +328,22 @@ function onXmppStanza(stanza) {
   //--> presence stanza
   if (stanza.is('presence')) {
     var r;
-    if (( r = stanza.attrs.to.match(JABBER_ID_REGEX)  )) {
+    if (stanza.attrs.type == "error") {
+      console.log("  !  received error stanza");
+    } else if (( r = stanza.attrs.to.match(JABBER_ID_REGEX)  )) {
       if (stanza.attrs.type == "unavailable") {
         leaveRoom(r[1], stanza.attrs.from);
         xmppSendPresence(stanza.attrs.to, stanza.attrs.from, 'member', 'none', 'unavailable', [ '110' ]);
         
         return;
       }
-      var xMucChild = stanza.getChild("x", "http://jabber.org/protocol/muc"), historyChild = null, passwdProvided = null;
+      var xMucChild = stanza.getChild("x", "http://jabber.org/protocol/muc"), historyChild = null, passwdProvided = null, xmppshow = null;
       if (xMucChild) {
         historyChild = xMucChild.getChild("history");
         passwdProvided = xMucChild.getChildText("password");
+        xmppshow = xMucChild.getChildText("show");
       }
-      xmppJoinRoom(r[1], r[2], r[3], stanza.attrs.from, historyChild, passwdProvided);
+      xmppJoinRoom(r[1], r[2], r[3], stanza.attrs.from, historyChild, passwdProvided, xmppshow);
     
     /*
        clients do not support it... (at least jitsi)
@@ -336,24 +389,35 @@ function onXmppStanza(stanza) {
             xmppSendPresence(stanza.attrs.to, stanza.attrs.from, 'member', 'none', 'unavailable', [ '110' ], null, null, errStr);
             
             
-        } else if (( body = stanza.getChild('body') )) {
-            // pass along regular messages
-            
-            var messageText = stanza.getChildText('body');
-            if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="." || messageText.charAt(0)=="/")) {
-              runBotCommand(r, stanza.attrs.from, messageText, stanza.attrs.id);
-            } else if (isMessageOverlyLong(rooms[r[1]], messageText)) {
-              storePastebin(messageText, function(newMsg) {
-                postMsg(r[1], user.nick, newMsg, stanza.attrs.id, stanza.attrs.from);
-              });
+        } else if (stanza.type == "groupchat") {
+            if (( body = stanza.getChild('body') )) {
+                // pass along regular messages
+                
+                var messageText = stanza.getChildText('body');
+                if (messageText == "") return;
+                
+                var passChildren = [];
+                for(var k in stanza.children)
+                  if (!stanza.children[k].is("body")) passChildren.push(stanza.children[k]);
+                
+                if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="." || messageText.charAt(0)=="/")) {
+                  runBotCommand(r, stanza.attrs.from, messageText, stanza.attrs.id);
+                } else if (isMessageOverlyLong(rooms[r[1]], messageText)) {
+                  storePastebin(messageText, function(newMsg) {
+                    postMsg(r[1], user.nick, newMsg, stanza.attrs.id, stanza.attrs.from, passChildren);
+                  });
+                } else {
+                  postMsg(r[1], user.nick, messageText, stanza.attrs.id, stanza.attrs.from, passChildren);
+                }
+                
+            } else if (( subject = stanza.getChild('subject') )) {
+                // room subject changes
+                setRoomTopic(r[1], user.nick, stanza.getChildText('subject'));
+                
             } else {
-              postMsg(r[1], user.nick, messageText, stanza.attrs.id, stanza.attrs.from);
+                //broadcastRoom(r[1], 'msg', { by: user.nick, msg: null, ts: +new Date(), xmppid: stanza.attrs.id });
+                postMsg(r[1], user.nick, null, stanza.attrs.id, stanza.attrs.from, stanza.children);
             }
-            
-        } else if (( subject = stanza.getChild('subject') )) {
-            // room subject changes
-            setRoomTopic(r[1], user.nick, stanza.getChildText('subject'));
-            
         }
         //var data = { nick: user.nick, msg: stanza.getChildText('body') };
         //broadcastRoom(r[1], 'message', data);
@@ -398,7 +462,15 @@ function getRoomProp(room, propName, defaultVal, minimumIntVal) {
   }
 }
 
-function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_joinerJid, historyChild, passwdProvided) {
+function xmppPresenceError(from, to, errorType, errorCondition) {
+  var p = new xmpp.Element('presence', { from: from, to: to,  type: 'error' });
+  p.c('x', { 'xmlns': XMLNS_MUC });
+  p.c('error', { by: myJid, type: errorType })
+    .c(errorCondition, { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
+  return p;
+}
+
+function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_joinerJid, historyChild, passwdProvided, awayState) {
   
   var mems = getRoomMembers(stanza_room);
   var rprefix = stanza_room+'@'+stanza_roomHost+'/';
@@ -409,25 +481,31 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
   console.log("+++ JOIN: ",stanza_room,stanza_roomNick,"alreadyIn:"+alreadyIn,"passw/"+passwdProvided+"/"+passwdReq);
   
   if (!alreadyIn && passwdReq && passwdProvided!=passwdReq) {
-    var p = new xmpp.Element('presence', { from: rprefix+stanza_roomNick, to: stanza_joinerJid,  type: 'error' });
-    p.c('x', { 'xmlns': XMLNS_MUC });
-    p.c('error', { by: myJid, type: 'modify' })
-      .c('not-authorized', { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
+    var p = xmppPresenceError(rprefix+stanza_roomNick, stanza_joinerJid, 'auth', 'not-authorized');
     xmppSend("presence error - passwd required", p);
     
     xmppErrMes(stanza_joinerJid, "Unable to join room "+rprefix+" - access denied (password).");
     return;
   }
   
+  var nickCollision = checkRoomNick(stanza_room, stanza_roomNick);
+  if (stanza_roomNick == "roombot"
+      || (  nickCollision && !( (new JID(stanza_joinerJid)).bare().equals(new JID(nickCollision.id).bare()) ) )
+      ) {
+      var p = xmppPresenceError(rprefix+stanza_roomNick, stanza_joinerJid, 'modify', 'conflict');
+      xmppSend("presence error - nickname conflict with "+(nickCollision&&nickCollision.id), p);
+      return;
+  }
+  
   
   for (var i in mems) {
     xmppSendPresence(rprefix+mems[i].nick, stanza_joinerJid, mems[i].xmppaffil||'member', mems[i].xmpprole||'participant', null, null, mems[i].id, mems[i].xmppshow);
   }
-  broadcastRoom(stanza_room, 'presence', getPresenceMessage({ nick: stanza_roomNick, type: 'jabber', id: stanza_joinerJid }, true));
+  broadcastRoom(stanza_room, 'presence', getPresenceMessage({ nick: stanza_roomNick, id: stanza_joinerJid, xmppshow: awayState }, true));
   
-  xmppSendPresence(rprefix+'roombot', stanza_joinerJid, 'member', 'participant');
+  xmppSendPresence(rprefix+'roombot', stanza_joinerJid, 'member', 'participant', null, null, 'roombot@teamwiki.de');
   var p = new xmpp.Element('presence', { from: rprefix+stanza_roomNick, to: stanza_joinerJid, id: stanza_joinerJid });
-  p.c('status').body(getUserInfo(stanza_joinerJid, "statusMessage"));
+  p.c('status').t(getUserInfo(stanza_joinerJid, "statusMessage"));
   p.c('x', { xmlns: XMLNS_MUC + '#user' })
     .c('item', { affiliation: 'member', role: 'participant', jid: stanza_joinerJid }).up()
     .c('status', { code: '110' }).up() // references the user itself
@@ -436,11 +514,12 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
     .c('status', { code: '210' });     // joined the room
   //if (stanza.getChild('c')) p.cnode(stanza.getChild('c'));
   //if (stanza.getChild('priority')) p.cnode(stanza.getChild('priority'));
+  if(awayState) p.c('show').t(awayState);
 
   xmppSend("self presence stanza:",p);
   
   
-  joinRoom(stanza_room, stanza_joinerJid, { type: 'jabber', nick: stanza_roomNick, msg: xmppMessageHandler });
+  joinRoom(stanza_room, stanza_joinerJid, { nick: stanza_roomNick, msg: xmppMessageHandler, xmppshow: awayState });
   
   // avoid history-resend on away change (adium...)
   if (!alreadyIn || historyChild) {
@@ -464,10 +543,14 @@ function xmppMessageHandler(msgType, data) {
         xmpprole = member && member.xmpprole;
     console.log("   messageHandler(presence)", member, xmppshow);
     xmppSendPresence(data.roomName+'@'+myJid+'/'+data.nick, this.id, xmppaffil||'member', xmpprole||'participant',
-                     data.type, stat, data.id, xmppshow, data.status);
+                     data.type, stat, data.id, data.xmppshow||xmppshow, data.status);
     break;
   case "msg":
-    var msg = xmppMessage(data.roomName, data.by, this.id, data.msg, data.xmppid);
+    var msg = xmppMessage(data.roomName, data.by, this.id, data.msg, data.xmppid, data.ts);
+    if (data.xmppchildren)
+      for(var i in data.xmppchildren)
+        msg.cnode(data.xmppchildren[i].clone());
+    
     xmppSend("sending message", msg);
     break;
   case "subject":
@@ -487,7 +570,7 @@ function xmppSendPresence(from, to, affil, role, type, status, fromJid, xmppShow
   }
   if (xmppShow) p.c('show').t(xmppShow);
   if (xmppStatus) p.c('status').t(xmppStatus);
-  else if (fromJid) p.c('status').body(getUserInfo(fromJid, "statusMessage"));
+  else if (fromJid) p.c('status').t(getUserInfo(fromJid, "statusMessage"));
   xmppSend("xmppSendPresence", p);
 }
 
@@ -505,29 +588,37 @@ function xmppSendHistory(room, to, historyInfo) {
         }catch(e){ console.log("Unable to parse history.since date:",historyInfo.attrs); }
     }
   }
-  console.log("Sending History: ", numstanzas, histsince, historyInfo);
-  getRoomHistory(room, null, numstanzas, histsince, function(err, results) {
+  console.log("->  Sending History: ", numstanzas, histsince, historyInfo);
+  getRoomHistory(room, null, numstanzas, histsince, function(err, r) {
     if (err) {
-      console.log("error loading history", err);
+      console.log("    error loading history", err);
       
-    } else {
-      for (var i = results.length - 1; i >= 0; i--) {
-        var r = results[i];
-        var msg = xmppMessage(room, r.by, to, r.msg, r.xmppid);
+    } else if(r) {
+      //for (var i = results.length - 1; i >= 0; i--) {
+      //  var r = results[i];
+        var msg = xmppMessage(room, r.by, to, r.msg, r.xmppid, r.ts);
         try {
+          if (r.replacexmppid) msg.c('replace', { xmlns: 'urn:xmpp:message-correct:0', id: r.replacexmppid });
           msg.c('delay', { xmlns: 'urn:xmpp:delay', from: room+'@'+myJid, stamp: new Date(r.ts).toISOString() });
           msg.c('x', { xmlns: 'urn:xmpp:delay', from: room+'@'+myJid, stamp: new Date(r.ts).toISOString() });
         } catch(e) {} //sometimes timestamp seems to be invalid
         xmppSend("Sending History", msg);
-      }
+      //}
+    } else {
+      console.log("    done sending history");
     }
   })
 }
 
-function xmppMessage(room, nick, to, body, msgid) {
+function xmppMessage(room, nick, to, body, msgid, ts) {
   if(!msgid) msgid=randId();
   var msg = new xmpp.Element('message', { type: 'groupchat', from: room+'@'+myJid+'/'+nick, to: to, id: msgid });
-  msg.c('body').t(body);
+  if (body) msg.c('body').t(body);
+  
+  // non-standard timestamp element, as seen on http://mail.jabber.org/pipermail/standards/2010-October/023918.html
+  // to avoid doubled messages in miniConf because of time differences of few seconds between server + client
+  msg.c('x', { xmlns: 'jabber:x:tstamp', tstamp: new Date(ts).toISOString() });
+  
   return msg;
 }
 
@@ -587,6 +678,54 @@ function storePastebin(messageText, callback) {
             console.log(" ! Unable to shorten message: ",error,response&&response.statusCode,body);
             callback(messageText);
           }
+      }
+  );
+}
+function subscribeToAirgram(email) {
+  var request = require('request');
+  if(!config.airgramAuth) {
+    pushToAirgram(email, "Welcome to chat notifications :-)"); return;
+  }
+  
+  request.post(
+      {
+        uri: "https://api.airgramapp.com/1/subscribe",
+        form: { email: email },
+        'auth': config.airgramAuth
+      },
+      function (error, response, body) {
+      }
+  );
+}
+function pushToAirgram(email, messageText) {
+  var request = require('request');
+  var apiEndpoint = (config.airgramAuth 
+                  ? 'https://api.airgramapp.com/1/send' 
+                  : 'https://api.airgramapp.com/1/send_as_guest');
+  request.post(
+      {
+        uri: apiEndpoint, rejectUnauthorized: false, 
+        form: { email: email, msg: messageText },
+        'auth': config.airgramAuth
+      },
+      function (error, response, body) {
+        console.log("Airgram response: ",email,messageText,response,error,body);
+      }
+  );
+}
+function pushToBoxcar(token, title, messageText) {
+  var request = require('request');
+  
+  request.post(
+      {
+        uri: 'https://new.boxcar.io/api/notifications',
+        form: {
+          "user_credentials": token, "notification[title]": title, "notification[long_message]": messageText,
+          "notification[sound]": "bell-triple", "notification[source_name]": myJid, 
+          "notification[icon_url]": "https://raw.githubusercontent.com/max-weller/miniConf/master/Icons/AppIcon/Jabber64.png"
+        } 
+      },
+      function (error, response, body) {
       }
   );
 }

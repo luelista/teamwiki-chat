@@ -16,7 +16,10 @@
   "dependencies": {
     "crypto": "0.0.3",
     "express": "3.0.6",
-    "mongojs": "0.4.6",
+
+    "mongojs": "# old version 0.4.6",
+    "mongojs": "0.14.1",
+
     "mongoose": "3.5.3",
     "mysql": "2.0.0-alpha7",
     "node-stringprep": "0.1.5",
