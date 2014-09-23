@@ -1,0 +1,26 @@
+module.exports = {
+
+  'app_muc'   :   {
+		
+		/*  required config
+		 */
+		
+    dbName							: '<mongodb database name>',
+    xmppHost            : '127.0.0.1',
+    xmppPort            : '5347',
+    xmppComponentJid    : 'chat.example.org',
+    xmppComponentSecret : '<component secret>',
+    
+		
+		/*  optional: Airgram api token - if not set, send_as_guest is used (rate 
+		 *  limited to 50 unique recps/day)
+		 */
+		
+    // airgramAuth         : { 'user':'<airgram key>', 'pass':'<airgram secret>' }
+    
+  }
+,
+
+  //// ...optional: more instances
+  
+};
