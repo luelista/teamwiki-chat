@@ -3,7 +3,7 @@
   
   var theRoom = rooms[r[1]];
   var user = theRoom.members[stanza_fromJid];
-  var temp = messageText.match(/^\/(\/)?([a-zA-Z0-9_.-]+)(\s+(.*))?$/), broadcastFlag=!temp[1], cmd=temp[2], params=temp[4];
+  var temp = messageText.match(/^[\/!](\/)?([a-zA-Z0-9_.-]+)(\s+(.*))?$/), broadcastFlag=!temp[1], cmd=temp[2], params=temp[4];
   
   function pad(a,b){return(1e15+a+"").slice(-b)}
   

@@ -439,7 +439,7 @@ function onXmppStanza(stanza) {
                 for(var k in stanza.children)
                   if (!stanza.children[k].is("body")) passChildren.push(stanza.children[k]);
                 
-                if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="." || messageText.charAt(0)=="/")) {
+                if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="!" || messageText.charAt(0)=="/")) {
                   runBotCommand(r, stanza.attrs.from, messageText, stanza.attrs.id);
                 } else if (isMessageOverlyLong(rooms[r[1]], messageText)) {
                   storePastebin(messageText, function(newMsg) {
