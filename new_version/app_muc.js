@@ -11,6 +11,7 @@ file in this folder for details.\n\
 var crypto = require ('crypto');
 var fs = require ('fs');
 var xmpp = require('node-xmpp');
+var http = require('http');
 var JID = xmpp.JID;
 
 var configModule = require('./config');
@@ -44,6 +45,42 @@ var connectedClients = {};
 
 var rooms = {};
 
+function is_yes(str) {
+    if (str) return true;
+    if (typeof str != "string") return false;
+    str=str.toLowerCase();
+    if(str=="yes"||str=="true"||str=="on")return true; else return false;
+}
+
+if (config.httpPort) {
+    var httpSrv = http.createServer(function(req, resp) {
+	var m = req.url.match(/^\/([a-z0-9_.-]+)$/);
+	console.log("http request: "+req.method+"\t"+req.url);//,m,req.headers);
+	if (req.method != "POST" || !m) {
+	    var answer = "The server is unable to fulfill this request.\n";
+	    resp.writeHead(400, { "Content-Length": answer.length });
+	    resp.end(answer);
+	    return;
+	}
+	if (!is_yes(getRoomProp(m[1], "allow-http-post", 0))) {
+	    var answer = "This channel either does not exist or you are not allowed to POST messages into it.\n";
+	    resp.writeHead(404, { "Content-Length": answer.length });
+	    resp.end(answer);
+	    return;
+	}
+	var data = "";
+	req.on("data", function(dataIn) {
+	    data += dataIn;
+	});
+	req.on("end", function() {
+	    if (req.headers["x-forwarded-for"]) data = "External message from "+req.headers["x-forwarded-for"]+":\n"+data;
+	    postMsg(m[1], "roombot", data, null);
+	    var answer = "Posted\n";
+	    resp.writeHead(200, { "Content-Length": answer.length });
+	    resp.end(answer);
+	});
+    }).listen(config.httpPort, "127.0.0.1");
+}
 
 //--> Initialization
 db.mongo.rooms.find().toArray(function(err, results) {
@@ -103,7 +140,9 @@ function getRoomHistory(roomName, beforeTs, amount, afterTs, callbackIter) {
   cursor.count(function(err, countNr) {
     if (err) callbackIter(err, null);
     else {
-      cursor.sort({_id: 1}).skip(Math.max(0,countNr-amount)).forEach(callbackIter);
+      var toSkip = Math.max(0,countNr-amount);
+      console.log("    getRoomHistory: "+"found "+countNr+", requested "+amount+", skipping "+toSkip);
+      cursor.sort({_id: 1}).skip(toSkip).forEach(callbackIter);
     }
   })
   //cursor.forEach(callbackIter);
@@ -668,7 +707,7 @@ function storePastebin(messageText, callback) {
   var request = require('request');
 
   request.post(
-      { uri: 'https://paste.teamwiki.de/api/',
+      { uri: 'http://paste.teamwiki.de/api/',
       rejectUnauthorized: false, form: { content: messageText, lexer: 'plain', format: 'url', expires: 'never' } },
       function (error, response, body) {
           if (!error && response.statusCode == 200) {
@@ -709,7 +748,8 @@ function pushToAirgram(email, messageText) {
         'auth': config.airgramAuth
       },
       function (error, response, body) {
-        console.log("Airgram response: ",email,messageText,response,error,body);
+        //console.log("Airgram response: ",email,messageText,response,error,body);
+        console.log("Airgram respone: ",body);
       }
   );
 }

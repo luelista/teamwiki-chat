@@ -249,6 +249,24 @@
       xmppSendHistory(r[1], stanza_fromJid, {attrs: {maxstanzas: parseInt(params,10) }} );
       break;
     
+    case "hist":case "history":
+      //broadcastFlag = false;
+      var numstanzas = parseInt(params,10);
+      if (!numstanzas || numstanzas<1 || numstanzas>15) numstanzas=5;
+      var histsince = null;
+      var outStr = "";
+      getRoomHistory(r[1], null, numstanzas, histsince, function(err, r) {
+        if (err) {
+          console.log("    /hist: error loading history", err);
+          botsend(false, "error loading history ("+err+")");
+        } else if(r) {
+          outStr += "["+(new Date(r.ts).toString())+"] "+r.by+": "+r.msg+"\r\n";
+        } else {
+          console.log("    done collecting history");
+          botsend(false, outStr);
+        }
+      });
+      break;
     default:
       broadcastFlag = false;
       botsend(false, "I don't know about "+cmd+"...");
