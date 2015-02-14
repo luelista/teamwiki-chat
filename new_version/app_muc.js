@@ -54,31 +54,75 @@ function is_yes(str) {
 
 if (config.httpPort) {
     var httpSrv = http.createServer(function(req, resp) {
-	var m = req.url.match(/^\/([a-z0-9_.-]+)$/);
-	console.log("http request: "+req.method+"\t"+req.url);//,m,req.headers);
-	if (req.method != "POST" || !m) {
-	    var answer = "The server is unable to fulfill this request.\n";
-	    resp.writeHead(400, { "Content-Length": answer.length });
+	console.log("http request: "+req.method+"\t"+req.url);
+	function err_400(answer, num) {
+	    console.log("HTTP ERROR", answer, num);
+	    if (!answer) answer = "The server is unable to fulfill this request.\n";
+	    resp.writeHead(num || 400, { "Content-Length": answer.length });
 	    resp.end(answer);
-	    return;
 	}
-	if (!is_yes(getRoomProp(m[1], "allow-http-post", 0))) {
-	    var answer = "This channel either does not exist or you are not allowed to POST messages into it.\n";
-	    resp.writeHead(404, { "Content-Length": answer.length });
+	function err_401(answer) {
+	    if (!answer) answer = "Unauthorized.\n";
+	    resp.writeHead(401, { "WWW-Authenticate": "Basic realm=\""+m[1]+"\"", "Content-Length": answer.length });
 	    resp.end(answer);
-	    return;
 	}
-	var data = "";
-	req.on("data", function(dataIn) {
-	    data += dataIn;
-	});
-	req.on("end", function() {
-	    if (req.headers["x-forwarded-for"]) data = "External message from "+req.headers["x-forwarded-for"]+":\n"+data;
-	    postMsg(m[1], "roombot", data, null);
-	    var answer = "Posted\n";
-	    resp.writeHead(200, { "Content-Length": answer.length });
-	    resp.end(answer);
-	});
+	var m = req.url.match(/^\/([a-z0-9_.-]+)(\/.*)?$/);
+	if (!m) {
+	    err_400("Invalid URL format."); return;
+	}
+	if (req.method == "GET") {
+	    var pw = getRoomProp(m[1], "web-archive-password");
+	    if (!pw) { err_400("Channel not found or disabled.\n", 404); return; }
+	    var auth = req.headers["authorization"] ? new Buffer(req.headers["authorization"].substr(6), 'base64').toString().split(/:/) : ['',''];
+	    
+	    if (pw != auth[1]) { err_401(); return; }
+	    var mm;
+	    console.log(m);
+	    if (m[2] && (mm = m[2].match(/\/ts=([0-9]+)/))) {
+		var ts = parseInt(mm[1]), out = '[\n', first = true;
+		//ts = 0;
+		console.log("calling getRoomHistory");
+		getRoomHistory(m[1], ts, 100, null, function(err, msg) {
+		    console.log("getRoomHistory callback:",err,msg);
+		    if (err) err_400("Internal error\n", 500);
+		    else if (msg) {
+			out += '  ' + (first ? '' : ',') + JSON.stringify([msg.ts, msg.xmppid, msg.by, msg.msg]) + "\n";
+			first = false;
+		    } else {
+			out += ']';
+			out = new Buffer(out, "utf8");
+			resp.writeHead(200, { "Content-Length": out.length, "Content-Type": "application/json; charset=utf-8" });
+			resp.end(out);
+		    }
+		});
+	    } else {
+		var out = ' <script src="//public_html.luelistan.net/js/jquery-2.1.3.min.js"></script><script src="//public_html.luelistan.net/js/chatlog.js"></script> ';
+		resp.writeHead(200, { "Content-Length": out.length, "Content-Type": "text/html; charset=utf-8" });
+		resp.end(out);
+		
+	    }
+	    
+	} else if (req.method == "POST") {
+	    if (!is_yes(getRoomProp(m[1], "allow-http-post", 0))) {
+		var answer = "This channel either does not exist or you are not allowed to POST messages into it.\n";
+		resp.writeHead(404, { "Content-Length": answer.length });
+		resp.end(answer);
+		return;
+	    }
+	    var data = "";
+	    req.on("data", function(dataIn) {
+		data += dataIn;
+	    });
+	    req.on("end", function() {
+		if (req.headers["x-forwarded-for"]) data = "External message from "+req.headers["x-forwarded-for"]+":\n"+data;
+		postMsg(m[1], "roombot", data, null);
+		var answer = "Posted\n";
+		resp.writeHead(200, { "Content-Length": answer.length });
+		resp.end(answer);
+	    });
+	} else {
+	    err_400("Method not implemented.\n");
+	}
     }).listen(config.httpPort, "127.0.0.1");
 }
 
@@ -134,7 +178,7 @@ function getRoomHistory(roomName, beforeTs, amount, afterTs, callbackIter) {
   if (afterTs) query.ts = { $gt: afterTs };
   if (beforeTs && afterTs) query.ts = { $lt: beforeTs, $gt: afterTs };
   query.room = roomName;
-
+console.log(query);
   var cursor = db.mongo.messages.find(query); //.sort({_id: -1}).limit(amount).sort({_id: 1});
   //.toArray(callback)
   cursor.count(function(err, countNr) {
