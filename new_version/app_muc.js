@@ -554,12 +554,14 @@ function xmppPresenceError(from, to, errorType, errorCondition) {
 }
 
 function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_joinerJid, historyChild, passwdProvided, awayState) {
-  
+  var joiner = new JID(stanza_joinerJid);
   var mems = getRoomMembers(stanza_room);
   var rprefix = stanza_room+'@'+stanza_roomHost+'/';
   
   var alreadyIn = (stanza_joinerJid in mems);
   var passwdReq = getRoomProp(stanza_room, "password-required", "");
+  var roomAcl = getRoomProp(stanza_room, "acl", "");
+  if (roomAcl) roomAcl = roomAcl.split(/[;, ]+/);
   
   console.log("+++ JOIN: ",stanza_room,stanza_roomNick,"alreadyIn:"+alreadyIn,"passw/"+passwdProvided+"/"+passwdReq);
   
@@ -570,10 +572,17 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
     xmppErrMes(stanza_joinerJid, "Unable to join room "+rprefix+" - access denied (password).");
     return;
   }
+  if (!alreadyIn && roomAcl && !roomAcl.some(function(allowedJid) { return allowedJid.toLowerCase() == joiner.bare().toLowerCase(); })) {
+    var p = xmppPresenceError(rprefix+stanza_roomNick, stanza_joinerJid, 'auth', 'registration-required');
+    xmppSend("presence error - not allowed to join members-only room", p);
+
+    xmppErrMes(stanza_joinerJid, "Unable to join room "+rprefix+" - access denied (members-only).");
+    return;
+  }
   
   var nickCollision = checkRoomNick(stanza_room, stanza_roomNick);
   if (stanza_roomNick == "roombot"
-      || (  nickCollision && !( (new JID(stanza_joinerJid)).bare().equals(new JID(nickCollision.id).bare()) ) )
+      || (  nickCollision && !( joiner.bare().equals(new JID(nickCollision.id).bare()) ) )
       ) {
       var p = xmppPresenceError(rprefix+stanza_roomNick, stanza_joinerJid, 'modify', 'conflict');
       xmppSend("presence error - nickname conflict with "+(nickCollision&&nickCollision.id), p);
