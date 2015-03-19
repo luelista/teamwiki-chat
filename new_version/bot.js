@@ -50,7 +50,12 @@
     
     case "kick":
       if (user.xmpprole != "moderator") break;
-      
+      var member = checkRoomNick(r[1], params);
+      if (member) {
+	leaveRoom(r[1], member.id);
+	xmppSendPresence(r[1]+'@'+myJid+'/'+params, member.id, 'member', 'none', 'unavailable', [ '110' ]);
+	console.log("ROOM OCCUPANT KICKED", r[1], stanza_fromJid, params);
+      }
       break;
     
     case "topic":

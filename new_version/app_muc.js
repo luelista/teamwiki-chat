@@ -453,7 +453,7 @@ function onXmppStanza(stanza) {
   
   //--> message stanza
   if (stanza.is('message')) {
-    var r;
+    var r, error, xmucuser;
     console.log("   INCOMING MESSAGE ");
     if (( r = stanza.attrs.to.match(JABBER_ID_REGEX2) )) {
       var users = getRoomMembers(r[1]), user = users[stanza.attrs.from];
@@ -471,7 +471,9 @@ function onXmppStanza(stanza) {
             leaveRoom(r[1], stanza.attrs.from, errStr);
             xmppSendPresence(stanza.attrs.to, stanza.attrs.from, 'member', 'none', 'unavailable', [ '110' ], null, null, errStr);
             
-            
+        } else if (( xmucuser = stanza.getChild("x", "http://jabber.org/protocol/muc#user") )) {
+					handleInvitation(r[1], r[2], r[3], stanza.attrs.from, xmucuser);
+					
         } else if (stanza.type == "groupchat") {
             if (( body = stanza.getChild('body') )) {
                 // pass along regular messages
@@ -572,7 +574,7 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
     xmppErrMes(stanza_joinerJid, "Unable to join room "+rprefix+" - access denied (password).");
     return;
   }
-  if (!alreadyIn && roomAcl && !roomAcl.some(function(allowedJid) { return allowedJid.toLowerCase() == joiner.bare().toLowerCase(); })) {
+  if (!alreadyIn && roomAcl && !roomAcl.some(function(allowedJid) { return allowedJid.toLowerCase() == joiner.bare(); })) {
     var p = xmppPresenceError(rprefix+stanza_roomNick, stanza_joinerJid, 'auth', 'registration-required');
     xmppSend("presence error - not allowed to join members-only room", p);
 
@@ -624,6 +626,28 @@ function xmppJoinRoom(stanza_room, stanza_roomHost, stanza_roomNick, stanza_join
   
 }
 
+function handleInvitation(stanza_room, stanza_roomHost, stanza_roomNick, stanza_fromJid, xmucuser) {
+  var c;
+  if (( c = xmucuser.getChild("invite") )) {
+		var invited = c.attr("to");
+		var passwdReq = getRoomProp(stanza_room, "password-required", "");
+		var roomAcl = getRoomProp(stanza_room, "acl", "");
+		if (roomAcl) {
+			roomAcl = roomAcl.split(/[;, ]+/);
+			if (!roomAcl.some(function(j) { return j==invited; }))
+				roomAcl.push(invited);
+			setRoomProp(stanza_room, "acl",roomAcl.join("; "));
+		}
+		var msg = new xmpp.Element('message', { from: stanza_room+'@'+myJid, to: invited });
+		msg.c('x', { xmlns: 'jabber:x:tstamp', tstamp: new Date().toISOString() });
+    var inviteTag = msg.c('x', { xmlns:'http://jabber.org/protocol/muc#user'}).c('invite', {from: stanza_fromJid});
+    if (c.getChild('reason')) inviteTag.c('reason').t(c.getChildText('reason'));
+		
+    xmppSend("sending INVITE message from "+stanza_fromJid+" to "+invited, msg);
+
+		postMsg(stanza_room, "roombot", stanza_fromJid+" invited "+invited +" to this room", null);
+  }
+}
 
 function xmppMessageHandler(msgType, data) {
   switch(msgType) {
