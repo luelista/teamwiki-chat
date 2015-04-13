@@ -537,6 +537,7 @@ function setRoomProp(room, propName, propValue) {
   rooms[room].properties[propName] = propValue;
 }
 function getRoomProp(room, propName, defaultVal, minimumIntVal) {
+  if(!rooms[room]) return null;
   if(!rooms[room].properties)rooms[room].properties = {};
   var val = rooms[room].properties[propName];
   
