@@ -357,7 +357,7 @@ function onXmppStanza(stanza) {
     //--> - chatroom details, member list
     if (recp.length == 2 && recp[1] == myJid) {
       var room = rooms[recp[0]];
-      if (room && ! (room.properties && room.properties.hidden == "true") ) {
+      if (room) {
         if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
           var disco = discoReply(stanza, query), d = disco.getChild('query');
           disco.attrs.from = stanza.attrs.to;
