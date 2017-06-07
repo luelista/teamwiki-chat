@@ -96,7 +96,7 @@ if (config.httpPort) {
 		    }
 		});
 	    } else {
-		var out = ' <script src="//public_html.luelistan.net/js/jquery-2.1.3.min.js"></script><script src="//public_html.luelistan.net/js/chatlog.js"></script> ';
+		var out = ' <script src="//static.luelistan.net/js/jquery-2.1.3.min.js"></script><script src="//static.luelistan.net/js/chatlog.js"></script> ';
 		resp.writeHead(200, { "Content-Length": out.length, "Content-Type": "text/html; charset=utf-8" });
 		resp.end(out);
 		
