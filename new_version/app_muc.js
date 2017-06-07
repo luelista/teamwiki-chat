@@ -499,9 +499,10 @@ function onXmppStanza(stanza) {
                 if (messageText == "") return;
                 
                 var passChildren = [];
-                for(var k in stanza.children)
-                  if (!stanza.children[k].is("body")) passChildren.push(stanza.children[k]);
-                
+                for(var k in stanza.children) {
+                  var chld = stanza.children[k];
+                  if (chld.name && chld.name != 'body') passChildren.push(chld);
+                } 
                 if (messageText && (messageText.charAt(0)=="#" || messageText.charAt(0)=="!" || messageText.charAt(0)=="/")) {
                   runBotCommand(r, stanza.attrs.from, messageText, stanza.attrs.id);
                 } else if (isMessageOverlyLong(rooms[r[1]], messageText)) {
