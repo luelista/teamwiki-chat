@@ -338,10 +338,12 @@ function onXmppStanza(stanza) {
     
     //-->  - chat service announcement, list all chatrooms
     if (recp.length == 1 && recp[0] == myJid) {
+      var query;
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#info")) {
         var disco = discoReply(stanza, query), d = disco.getChild('query');
         d.c('identity', { category: 'conference', type: 'text', name: 'TeamWiki Chat System' });
         d.c('feature', { 'var': 'http://jabber.org/protocol/muc' });
+        if (config.httpUpload) d.c('feature', { 'var': 'urn:xmpp:http:upload' });
         xmppSend("sent info stanza : ", disco);
       }
       if (query = stanza.getChild('query', "http://jabber.org/protocol/disco#items")) {
@@ -352,6 +354,21 @@ function onXmppStanza(stanza) {
         }
         xmppSend("sent items stanza : ", disco);
       }
+
+      if (query = stanza.getChild('request', "urn:xmpp:http:upload")) {
+        try {
+        createUploadSlot(stanza.attrs.id, stanza.attrs.from, query.getChildText('filename'), query.getChildText('size'), query.getChildText('content-type'), function(response) {
+          xmppSend("Upload-Slot reponse: ", response);
+        });
+        }catch(ex) {
+          var err=new xmpp.Element('iq', {'type':'error',to:stanza.attrs.from,from:stanza.attrs.to,id:stanza.attrs.id});
+          err.cnode(query);
+          err.c('error', {type:'modify'}).c('not-acceptable',{xmlns:'urn:ietf:params:xml:ns:xmpp-stanzas'})
+              .up().c('text',{xmlns:'urn:ietf:params:xml:ns:xmpp-stanzas'}).t('ERROR: '+ex);
+          xmppSend('Upload-Slot: sent error message: ', err);
+        }
+      }
+
     }
     
     //--> - chatroom details, member list
@@ -760,7 +777,9 @@ function xmppSend(debug, msg) {
 function randId() {
   return Math.floor(Math.random()*10000000)+1000000;
 }
-
+function guid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {var r = Math.random()*16|0,v=c=='x'?r:r&0x3|0x8;return v.toString(16);});
+}
 
 function discoReply(stanza, query) {
   var disco = new xmpp.Element('iq', 
@@ -780,6 +799,22 @@ function isMessageOverlyLong(roomInfo, messageText) {
 
 //HACK HACK HACK
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+function createUploadSlot(stanza_id, sender, filename, size, contentType, callback) {
+  var iq = new xmpp.Element('iq', 
+                               { type: 'result', from: myJid, to: sender, id: stanza_id });
+  var slot = iq.c('slot', { xmlns: 'urn:xmpp:http:upload' });
+  var id = guid();
+  //var filename = filename.replace(/[^a-zA-Z0-9_.-]/, '');
+  var parts = filename.match(/^(.*)\.([a-zA-Z0-9]+)$/);console.log(filename,parts);
+  if (!parts) parts=['',filename,''];
+  if (parts[2]!='jpg'&&parts[2]!='gif'&&parts[2]!='png'&&parts[2]!='webp') parts[2]='txt';
+  filename = parts[1].replace(/[^a-zA-Z0-9_-]/, '') + '.' + parts[2];
+  slot.c('put').t(config.httpUpload.baseUrl + 'api/upload/file?uuid=' + id);
+  slot.c('get').t(config.httpUpload.baseUrl + '' + id + '_' + filename);
+  fs.appendFileSync(config.httpUpload.logfile, sender+'\t'+stanza_id+'\t'+id+'\t'+filename+'\n');
+  callback(iq);
+}
 
 function storePastebin(messageText, callback) {
   var request = require('request');
