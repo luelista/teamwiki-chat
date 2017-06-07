@@ -1,10 +1,15 @@
 (function runBotCommand(r, stanza_fromJid, messageText, stanza_xmppid) {
+// vim: expandtab:ts=2:sw=2
   var moment = require('moment');
   
   var theRoom = rooms[r[1]];
   var user = theRoom.members[stanza_fromJid];
-  var temp = messageText.match(/^[\/!](\/)?([a-zA-Z0-9_.-]+)(\s+(.*))?$/), broadcastFlag=!temp[1], cmd=temp[2], params=temp[4];
-  
+  if (messageText[0] == '#')  {
+    cmd='ticket'; broadcastFlag=false; params=messageText;
+  } else {
+    var temp = messageText.match(/^[\/!](\/)?([a-zA-Z0-9_.-]+)(\s+(.*))?$/), broadcastFlag=!temp[1], cmd=temp[2], params=temp[4];
+  }
+
   function pad(a,b){return(1e15+a+"").slice(-b)}
   
   //var broadcastFlag = (messageText.charAt(0)=='.');
@@ -31,8 +36,29 @@
     }
     return recvs;
   }
-  
-  if(cmd == 'forceinvite' || cmd == 'who' || cmd == 'forceremove' || cmd == 'op' || cmd == 'fullhistory' || cmd == 'msg' || cmd == 'w' || cmd == 'dump') broadcastFlag = false;
+  function sendToTicketTracker(projectGuid, ticketId, reporter, assigned_to, message, note) {
+		var request = require('request');
+		request.post(
+				{
+					uri: 'http://tickets.weller.io/new_from_chat?format=json',
+					form: {
+						project: projectGuid, reported_by: reporter, subject: message, ticketId: ticketId, note: note, assigned_to: assigned_to
+					} 
+				},
+				function (error, response, body) {
+					if (error) botsend(false, ""+error);
+					else {
+						var j=JSON.parse(body);
+						console.log(body,j);
+						broadcastFlag = true;
+						botsend(true, messageText + "\n" + j['ticket_link']);
+					}
+				}
+		);
+	}
+
+
+  if(cmd == 'forceinvite' || cmd == 'who' || cmd == 'forceremove' || cmd == 'op' || cmd == 'fullhistory' || cmd == 'msg' || cmd == 'w' || cmd == 'dump' || cmd == 'ticket') broadcastFlag = false;
   
   botsend(true, messageText);
   
@@ -42,7 +68,20 @@
       //xmppSend("bot's sending PONG message", msg);
       botsend(false, 'My answer is pong.');
       break;
-    
+    case "ticket":
+      var props = theRoom.properties || {};
+      if (!props.ticketproject) {botsend(false, 'This room is not configured for tickets. ');}
+			var m;
+			if (m = params.match(/^\s*#([0-9]+)\s*([^]+)$/)) {
+				var ticketId = m[1],  body = m[2];
+        sendToTicketTracker(props.ticketproject, ticketId, user.nick, "","", body);
+			} else if (m = params.match(/^\s*(?:##)\s*(?:@([^ :\n]+):?|([^:\n]+):)?([^\n]+)(?:\n([^]*))?$/)) {
+				var  assignee = m[1] || m[2], subject = m[3], body = m[4];
+        sendToTicketTracker(props.ticketproject, "", user.nick, assignee, subject, body);
+			} else {
+				botsend(false, 'error');
+			}
+			break;
     case "forceinvite":
       var a = params.split(/ /);
       xmppJoinRoom(r[1], r[2], a[0], a[1], null);
