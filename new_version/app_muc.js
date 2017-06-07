@@ -463,7 +463,7 @@ function onXmppStanza(stanza) {
         .c('jid-malformed', { xmlns: 'urn:ietf:params:xml:ns:xmpp-stanzas' });
       xmppSend("presence error", p);
       
-      xmppErrMes(stanza.attrs.from, "Unable to join room "+stanza.attrs.to+" because the jabber id was invalid (try to provide another nickname).");
+      xmppErrMes(stanza.attrs.from, "You can't join the room \""+stanza.attrs.to+"\" because your client at \""+stanza.attrs.from+"\" provided an invalid jabber id. Make sure your nickname contains only lower case letters , numbers, dots and dashes. Also check if you provided a valid room name.");
       
     }
   }
